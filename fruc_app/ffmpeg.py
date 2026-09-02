@@ -171,14 +171,21 @@ def fps_filename_text(fps: Fraction) -> str:
 
 def filter_chain(probe: ProbeInfo, settings: RenderSettings) -> str:
     fruc = f"fruc_vulkan=fps=source_fps*{settings.multiplier}:perf={settings.performance}:grid={settings.grid}"
-    mixer = f"libplacebo=fps={probe.fps_rational}:frame_mixer={settings.frame_mixer}"
-    if settings.multiplier == 8:
-        midpoint = probe.fps * 2
-        mixer = (
-            f"libplacebo=fps={midpoint.numerator}/{midpoint.denominator}:frame_mixer={settings.frame_mixer},"
-            f"{mixer}"
-        )
-    return f"{fruc},{mixer}"
+    midpoint = {8: 2, 12: 3, 16: 4}.get(settings.multiplier)
+    stage_factors = (midpoint, 1) if midpoint else (1,)
+    blur = f"{settings.blur_amount:.2f}".rstrip("0").rstrip(".")
+    dictionary_separator = r"\\:"
+    mixers = []
+    for factor in stage_factors:
+        target = probe.fps * factor
+        mixer = f"libplacebo=fps={target.numerator}/{target.denominator}:frame_mixer={settings.frame_mixer}"
+        if blur != "1":
+            mixer += (
+                f":extra_opts=frame_mixer=custom{dictionary_separator}"
+                f"frame_mixer_preset={settings.frame_mixer}{dictionary_separator}frame_mixer_blur={blur}"
+            )
+        mixers.append(mixer)
+    return ",".join((fruc, *mixers))
 
 
 def output_paths(input_path: Path, probe: ProbeInfo, settings: RenderSettings) -> tuple[Path, Path | None]:

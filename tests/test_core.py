@@ -43,6 +43,19 @@ class FFMpegCoreTests(unittest.TestCase):
             "libplacebo=fps=60000/1001:frame_mixer=linear",
         )
 
+    def test_12x_and_16x_use_balanced_mixing_stages(self) -> None:
+        for multiplier, midpoint in ((12, "180000/1001"), (16, "240000/1001")):
+            with self.subTest(multiplier=multiplier):
+                chain = filter_chain(self.probe, RenderSettings(multiplier=multiplier))
+                self.assertIn(f"fps=source_fps*{multiplier}", chain)
+                self.assertIn(f"libplacebo=fps={midpoint}", chain)
+                self.assertEqual(chain.count("libplacebo="), 2)
+
+    def test_blur_amount_uses_custom_temporal_kernel(self) -> None:
+        chain = filter_chain(self.probe, RenderSettings(multiplier=4, blur_amount=1.5))
+        self.assertIn("frame_mixer=custom\\\\:frame_mixer_preset=linear", chain)
+        self.assertIn("frame_mixer_blur=1.5", chain)
+
     def test_command_initializes_vulkan_before_input_and_stays_hardware_native(self) -> None:
         command = build_render_command(Path("ffmpeg.exe"), Path("input.mp4"), Path("out.ts"), self.probe, RenderSettings())
         self.assertLess(command.index("-init_hw_device"), command.index("-i"))
@@ -78,16 +91,16 @@ class SettingsTests(unittest.TestCase):
     def test_settings_round_trip_and_unknown_keys(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "settings.json"
-            save_settings(RenderSettings(multiplier=8, qp=31), path)
+            save_settings(RenderSettings(multiplier=16, blur_amount=1.5, qp=31), path)
             data = json.loads(path.read_text(encoding="utf-8"))
             data["future_setting"] = True
             path.write_text(json.dumps(data), encoding="utf-8")
             loaded = load_settings(path)
-            self.assertEqual((loaded.multiplier, loaded.qp), (8, 31))
+            self.assertEqual((loaded.multiplier, loaded.blur_amount, loaded.qp), (16, 1.5, 31))
 
     def test_invalid_values_fall_back_or_clamp(self) -> None:
-        settings = RenderSettings.from_dict({"multiplier": 99, "qp": 100, "device_index": -5})
-        self.assertEqual((settings.multiplier, settings.qp, settings.device_index), (4, 40, 0))
+        settings = RenderSettings.from_dict({"multiplier": 99, "blur_amount": 9, "qp": 100, "device_index": -5})
+        self.assertEqual((settings.multiplier, settings.blur_amount, settings.qp, settings.device_index), (4, 2.0, 40, 0))
 
 
 if __name__ == "__main__":

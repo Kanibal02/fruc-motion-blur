@@ -36,7 +36,7 @@ Drop files or a folder onto the add area. Folder drops scan supported videos in 
 ## Render behavior
 
 - Source FPS comes from `avg_frame_rate`, with `r_frame_rate` as a fallback. The rational value is preserved.
-- Default settings are 4× FRUC, Fast performance, grid 4, `linear` mixing, and H.264 Vulkan QP 28.
+- Default settings are 4× FRUC, Fast performance, grid 4, `linear` mixing, 100% blur amount, and H.264 Vulkan QP 28.
 - Output names follow `inputname_FRUC4x_blur_59.94fps.mp4`. Existing files are never overwritten; a numbered suffix is added.
 - The video is first rendered to MPEG-TS. When automatic MP4 remux is enabled, FFmpeg stream-copies the completed TS to MP4 with `+faststart`.
 - AAC, AC-3, E-AC-3, and MP3 audio are copied. Other audio formats are converted to high-bitrate AAC for container compatibility.
@@ -52,7 +52,9 @@ At startup the app validates Vulkan plus `fruc_vulkan`, `libplacebo`, `h264_vulk
 
 **Linear** is the default and produces more visible motion blur. **Hermite** produces less blur. `oversample` is intentionally hidden because its result is barely blurred, and `cubic` is rejected by the build. The exact filter and command are visible under **Advanced**.
 
-For 8×, the app uses two GPU mixing stages (8× → 2× → source FPS). A single 8× libplacebo stage exceeds its frame limit and aborts with `fidx < MAX_MIX_FRAMES`; the two-stage path succeeds with both mixers at tested source rates from 30 through 120 FPS.
+Higher multipliers use balanced GPU mixing stages: 8× → 2× → source FPS, 12× → 3× → source FPS, and 16× → 4× → source FPS. A single high-ratio libplacebo stage exceeds its frame limit; staged mixing succeeds at tested source rates from 30 through 120 FPS.
+
+**Blur amount** independently adjusts libplacebo's temporal-kernel width from 25% to 200%. The 100% default is byte-for-byte equivalent to the previous filter configuration; lower values shorten the trail and higher values lengthen it without changing the FRUC multiplier.
 
 Custom Bezier temporal weighting, explicit shutter phase, and arbitrary sample-weight curves are not exposed because the detected FFmpeg/libplacebo interface provides only a named `frame_mixer`. Implementing those controls honestly would require a verified custom shader/filter path; a GUI slider alone would be cosmetic.
 

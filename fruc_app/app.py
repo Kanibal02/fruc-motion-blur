@@ -105,6 +105,7 @@ class FRUCApp(ctk.CTk):
         self.performance_var = ctk.StringVar(value=s.performance.title())
         self.grid_var = ctk.StringVar(value=str(s.grid))
         self.mixer_var = ctk.StringVar(value=MIXER_LABELS.get(s.frame_mixer, MIXER_LABELS["linear"]))
+        self.blur_var = ctk.DoubleVar(value=s.blur_amount)
         self.qp_var = ctk.IntVar(value=s.qp)
         self.auto_mp4_var = ctk.BooleanVar(value=s.auto_mp4)
         self.keep_ts_var = ctk.BooleanVar(value=s.keep_ts)
@@ -270,7 +271,7 @@ class FRUCApp(ctk.CTk):
 
         title("Temporal sampling")
         multiplier = ctk.CTkSegmentedButton(
-            panel, values=["2×", "3×", "4×", "6×", "8×"], variable=self.multiplier_var,
+            panel, values=["2×", "3×", "4×", "6×", "8×", "12×", "16×"], variable=self.multiplier_var,
             command=lambda _: self._settings_changed(),
         )
         multiplier.grid(row=row, column=0, sticky="ew", padx=8)
@@ -314,6 +315,25 @@ class FRUCApp(ctk.CTk):
         row += 1
         ctk.CTkLabel(
             panel, text="Detected libplacebo temporal mixers only.", text_color="#8f98a6", anchor="w"
+        ).grid(row=row, column=0, sticky="ew", padx=8)
+        row += 1
+
+        title("Blur amount")
+        blur_frame = ctk.CTkFrame(panel, fg_color="transparent")
+        blur_frame.grid(row=row, column=0, sticky="ew", padx=8)
+        blur_frame.grid_columnconfigure(0, weight=1)
+        self.blur_label = ctk.CTkLabel(blur_frame, text=f"{self.blur_var.get() * 100:.0f}%")
+        self.blur_label.grid(row=0, column=1, padx=(8, 0))
+        blur_slider = ctk.CTkSlider(
+            blur_frame, from_=0.25, to=2.0, number_of_steps=35,
+            variable=self.blur_var, command=self._blur_changed,
+        )
+        blur_slider.grid(row=0, column=0, sticky="ew")
+        self.setting_controls.append(blur_slider)
+        row += 1
+        ctk.CTkLabel(
+            panel, text="100% = original look • lower = shorter • higher = longer",
+            text_color="#8f98a6", anchor="w",
         ).grid(row=row, column=0, sticky="ew", padx=8)
         row += 1
 
@@ -696,6 +716,8 @@ class FRUCApp(ctk.CTk):
             mixer = self.capabilities.mixers[0]
         self.multiplier_var.set(f"{multiplier}×")
         self.mixer_var.set(MIXER_LABELS[mixer])
+        self.blur_var.set(1.0)
+        self.blur_label.configure(text="100%")
         for job in self.jobs.values():
             self._update_row(job)
         self._update_diagnostics()
@@ -703,6 +725,11 @@ class FRUCApp(ctk.CTk):
     def _qp_changed(self, value: float) -> None:
         self.qp_var.set(round(value))
         self.qp_label.configure(text=f"QP {self.qp_var.get()}")
+        self._settings_changed()
+
+    def _blur_changed(self, value: float) -> None:
+        self.blur_var.set(round(value, 2))
+        self.blur_label.configure(text=f"{self.blur_var.get() * 100:.0f}%")
         self._settings_changed()
 
     def _output_mode_changed(self) -> None:
@@ -740,6 +767,7 @@ class FRUCApp(ctk.CTk):
             performance=self.performance_var.get().lower(),
             grid=int(self.grid_var.get()),
             frame_mixer=MIXERS_BY_LABEL.get(self.mixer_var.get(), "linear"),
+            blur_amount=float(self.blur_var.get()),
             qp=int(self.qp_var.get()),
             auto_mp4=self.auto_mp4_var.get(),
             keep_ts=self.keep_ts_var.get(),
