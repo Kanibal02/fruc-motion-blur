@@ -88,9 +88,12 @@ class Renderer:
             if self._stop_queue.is_set():
                 return
             self._run_job(job, settings)
-        except Cancelled:
-            job.error = "Cancelled by user"
-            self._status(job, JobStatus.CANCELLED, error=job.error)
+        except Cancelled as exc:
+            job.error = str(exc) or "Cancelled by user"
+            values: dict[str, object] = {"error": job.error}
+            if job.output_path:
+                values["output_path"] = job.output_path
+            self._status(job, JobStatus.CANCELLED, **values)
         except Exception as exc:  # Worker boundary: report and continue with the queue.
             job.error = str(exc)
             self._status(job, JobStatus.FAILED, error=job.error)
@@ -121,47 +124,58 @@ class Renderer:
         self._emit("command", job_id=job.id, command=command_text(render_command), filter=render_command[render_command.index(filter_option) + 1])
         self._status(job, JobStatus.RENDERING)
 
-        try:
-            return_code = self._run_process(render_command, job, "Rendering")
-        except Cancelled:
-            self._delete_if_present(intermediate_path)
-            raise
-        if return_code:
+        return_code = self._run_process(render_command, job, "Rendering")
+        cancelled = self._is_cancelled(job.id)
+        if return_code and not cancelled:
             self._delete_if_present(intermediate_path)
             raise RuntimeError(f"FFmpeg render failed with exit code {return_code}")
         if not intermediate_path.is_file() or intermediate_path.stat().st_size == 0:
+            self._delete_if_present(intermediate_path)
+            if cancelled:
+                raise Cancelled()
             raise RuntimeError("FFmpeg completed without producing an output file")
 
         output = intermediate_path
-        if mp4_path:
+        if mp4_path and not (cancelled and self._stop_queue.is_set()):
             remux_command = build_remux_command(self.ffmpeg, intermediate_path, mp4_path)
             self._emit("log", level="INFO", message=f"Remux command: {command_text(remux_command)}")
             self._status(job, JobStatus.REMUXING)
-            try:
-                return_code = self._run_process(remux_command, job, "Remuxing")
-            except Cancelled:
+            cancelled_before_remux = cancelled
+            return_code = self._run_process(
+                remux_command, job, "Remuxing", honor_cancel=not cancelled
+            )
+            cancelled = self._is_cancelled(job.id)
+            if cancelled and not cancelled_before_remux:
                 self._delete_if_present(mp4_path)
-                raise
-            if return_code:
+            elif return_code:
                 self._delete_if_present(mp4_path)
-                raise RuntimeError(
-                    f"MP4 remux failed; valid intermediate kept at {intermediate_path} "
-                    f"(exit code {return_code})"
-                )
-            if not mp4_path.is_file() or mp4_path.stat().st_size == 0:
-                raise RuntimeError(
-                    f"MP4 remux produced no file; valid intermediate kept at {intermediate_path}"
-                )
-            output = mp4_path
-            if not settings.keep_ts:
-                self._delete_if_present(intermediate_path)
+                if not cancelled:
+                    raise RuntimeError(
+                        f"MP4 remux failed; valid intermediate kept at {intermediate_path} "
+                        f"(exit code {return_code})"
+                    )
+            elif not mp4_path.is_file() or mp4_path.stat().st_size == 0:
+                self._delete_if_present(mp4_path)
+                if not cancelled:
+                    raise RuntimeError(
+                        f"MP4 remux produced no file; valid intermediate kept at {intermediate_path}"
+                    )
+            else:
+                output = mp4_path
+                if not settings.keep_ts:
+                    self._delete_if_present(intermediate_path)
 
+        cancelled = cancelled or self._is_cancelled(job.id)
         job.output_path = output
+        if cancelled:
+            raise Cancelled(f"Cancelled; output saved at {output}")
         job.error = ""
         self._status(job, JobStatus.DONE, output_path=output)
         self._emit("log", level="INFO", message=f"Completed: {output}")
 
-    def _run_process(self, command: list[str], job: RenderJob, stage: str) -> int:
+    def _run_process(
+        self, command: list[str], job: RenderJob, stage: str, honor_cancel: bool = True
+    ) -> int:
         self._emit("log", level="INFO", message=command_text(command))
         process = subprocess.Popen(
             command,
@@ -176,7 +190,7 @@ class Renderer:
         )
         with self._state_lock:
             self._processes[job.id] = process
-        if self._is_cancelled(job.id):
+        if honor_cancel and self._is_cancelled(job.id):
             self._stop_process(process)
         stderr_thread = threading.Thread(target=self._read_stderr, args=(process,), daemon=True)
         stderr_thread.start()
@@ -184,7 +198,7 @@ class Renderer:
         values: dict[str, str] = {}
         assert process.stdout is not None
         for raw in process.stdout:
-            if self._is_cancelled(job.id):
+            if honor_cancel and self._is_cancelled(job.id):
                 self._stop_process(process)
                 break
             line = raw.strip()
@@ -214,8 +228,6 @@ class Renderer:
         with self._state_lock:
             if self._processes.get(job.id) is process:
                 del self._processes[job.id]
-        if self._is_cancelled(job.id):
-            raise Cancelled()
         return return_code
 
     def _is_cancelled(self, job_id: str) -> bool:

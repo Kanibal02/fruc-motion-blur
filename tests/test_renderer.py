@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import queue
+import tempfile
 import threading
 import unittest
+from fractions import Fraction
 from pathlib import Path
+from unittest.mock import patch
 
-from fruc_app.models import RenderJob, RenderSettings
+from fruc_app.models import JobStatus, ProbeInfo, RenderJob, RenderSettings
 from fruc_app.renderer import Renderer
 
 
@@ -35,6 +38,51 @@ class ParallelRendererTests(unittest.TestCase):
         renderer._thread.join(timeout=2)
         self.assertFalse(renderer.running)
         self.assertEqual(maximum, 3)
+
+    def test_cancelled_render_is_remuxed_and_kept(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "video.mp4"
+            source.write_bytes(b"input")
+            job = RenderJob(source)
+            renderer = Renderer(Path("ffmpeg.exe"), Path("ffprobe.exe"), queue.Queue())
+            calls: list[tuple[str, bool]] = []
+
+            def run_process(
+                command: list[str], active_job: RenderJob, stage: str,
+                honor_cancel: bool = True,
+            ) -> int:
+                calls.append((stage, honor_cancel))
+                Path(command[-1]).write_bytes(b"partial video")
+                if stage == "Rendering":
+                    with renderer._state_lock:
+                        renderer._cancelled_jobs.add(active_job.id)
+                return 0
+
+            renderer._run_process = run_process  # type: ignore[method-assign]
+            probe = ProbeInfo(320, 180, Fraction(30), 10)
+            settings = RenderSettings(output_same_as_source=False, output_directory=str(root))
+            with (
+                patch("fruc_app.renderer.probe_media", return_value=probe),
+                patch(
+                    "fruc_app.renderer.build_render_command",
+                    side_effect=lambda ffmpeg, input_path, output, media, render_settings: [
+                        "ffmpeg", "-vf", "test", str(output)
+                    ],
+                ),
+                patch(
+                    "fruc_app.renderer.build_remux_command",
+                    side_effect=lambda ffmpeg, intermediate, output: ["ffmpeg", str(output)],
+                ),
+            ):
+                renderer._run_one(job, settings)
+
+            self.assertEqual(job.status, JobStatus.CANCELLED)
+            self.assertEqual(calls, [("Rendering", True), ("Remuxing", False)])
+            self.assertIsNotNone(job.output_path)
+            assert job.output_path is not None
+            self.assertTrue(job.output_path.is_file())
+            self.assertIn("output saved", job.error)
 
 
 if __name__ == "__main__":
