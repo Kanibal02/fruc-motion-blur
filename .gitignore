@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+dist/
+build/
+*.spec
+ffmpeg/bin/*.exe
+ffmpeg/doc/
+ffmpeg/presets/
+ffmpeg/README.txt
+*_FRUC*x_blur_*fps.mp4
+*_FRUC*x_blur_*fps.ts
+*_FRUC*x_blur_*fps.temp.ts

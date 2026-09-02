@@ -1,0 +1,96 @@
+# FRUC Motion Blur
+
+A native Windows desktop GUI for GPU-only Vulkan frame-rate up-conversion and temporal frame mixing with a bundled FFmpeg build. It turns ordinary video into a motion-blurred result through this hardware filter chain:
+
+```text
+fruc_vulkan=fps=source_fps*MULTIPLIER:perf=PERF:grid=GRID,
+libplacebo=fps=SOURCE_FPS:frame_mixer=MIXER
+```
+
+The input is Vulkan-decoded, both filters remain on GPU, and the result is encoded with `h264_vulkan`. No CPU interpolation or `hwdownload` path is used.
+
+## Requirements
+
+- Windows 10/11
+- Python 3.10 or newer (tested with Python 3.12)
+- A Vulkan-capable GPU and driver supporting the FFmpeg filters in use
+- `ffmpeg.exe` and `ffprobe.exe` in `ffmpeg/bin/`, or compatible binaries on `PATH`
+- The Python packages in `requirements.txt`
+
+Install the GUI dependencies:
+
+```powershell
+python -m pip install -r requirements.txt
+```
+
+## Launch
+
+Double-click `fruc_motion_blur.pyw`, or run:
+
+```powershell
+python .\fruc_motion_blur.pyw
+```
+
+Drop files or a folder onto the add area. Folder drops scan supported videos in that folder only; they are intentionally not recursive. Choose a preset or individual settings and select **Start Queue**. Jobs run sequentially.
+
+## Render behavior
+
+- Source FPS comes from `avg_frame_rate`, with `r_frame_rate` as a fallback. The rational value is preserved.
+- Default settings are 4× FRUC, Fast performance, grid 4, `linear` mixing, and H.264 Vulkan QP 28.
+- Output names follow `inputname_FRUC4x_blur_59.94fps.mp4`. Existing files are never overwritten; a numbered suffix is added.
+- The video is first rendered to MPEG-TS. When automatic MP4 remux is enabled, FFmpeg stream-copies the completed TS to MP4 with `+faststart`.
+- AAC, AC-3, E-AC-3, and MP3 audio are copied. Other audio formats are converted to high-bitrate AAC for container compatibility.
+- A failed render removes its incomplete TS. A failed or cancelled MP4 remux removes the incomplete MP4 but keeps the already-valid TS.
+- **Cancel Current** ends only the active item and continues. **Stop Queue** ends the active item and leaves remaining jobs waiting.
+
+## Presets and mixer support
+
+At startup the app validates Vulkan plus `fruc_vulkan`, `libplacebo`, `h264_vulkan`, and each proposed libplacebo mixer against the selected Vulkan device. Unsupported mixers are not shown. The supplied build accepts:
+
+- `linear`
+- `hermite`
+- `oversample`
+
+It rejects `cubic`, so no cubic preset is exposed. **Sharp** uses `oversample`; **Soft** uses `hermite`. The exact filter and command are visible under **Advanced**.
+
+Custom Bezier temporal weighting, explicit shutter phase, and arbitrary sample-weight curves are not exposed because the detected FFmpeg/libplacebo interface provides only a named `frame_mixer`. Implementing those controls honestly would require a verified custom shader/filter path; a GUI slider alone would be cosmetic.
+
+## Settings and logs
+
+Settings are saved to:
+
+```text
+%LOCALAPPDATA%\FRUCMotionBlur\settings.json
+```
+
+The in-app log is capped. Rotating persistent logs are stored in:
+
+```text
+%LOCALAPPDATA%\FRUCMotionBlur\logs\fruc-motion-blur.log
+```
+
+FFmpeg child processes are launched without console windows. Cancellation first sends `q`, then terminates, then kills only if the process does not exit.
+
+## Tests
+
+Run the standard-library test suite:
+
+```powershell
+python -m unittest discover -v
+```
+
+Tests cover rational FPS handling, exact filter construction, Vulkan argument order, audio fallback, safe output naming, progress parsing, and settings persistence.
+
+## Project structure
+
+```text
+fruc_motion_blur.pyw       Windows GUI entry point
+fruc_app/app.py            CustomTkinter interface and main-thread event handling
+fruc_app/ffmpeg.py         Probe, capability, command, naming, and progress helpers
+fruc_app/renderer.py       Sequential worker and process lifecycle
+fruc_app/models.py         Jobs, settings, statuses, and media metadata
+fruc_app/settings.py       JSON settings persistence
+fruc_app/paths.py          Bundled binary and app-data paths
+tests/test_core.py         Unit tests
+ffmpeg/bin/                Local FFmpeg executables (not committed due to size)
+```
