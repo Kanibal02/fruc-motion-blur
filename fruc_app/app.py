@@ -14,9 +14,11 @@ from tkinter import Menu, filedialog, messagebox, ttk
 import customtkinter as ctk
 
 try:
-    from tkinterdnd2 import DND_FILES, TkinterDnD
+    from tkinterdnd2 import COPY, DND_FILES, REFUSE_DROP, TkinterDnD
 except ImportError:
+    COPY = None
     DND_FILES = None
+    REFUSE_DROP = None
     TkinterDnD = None
 
 from .ffmpeg import (
@@ -365,14 +367,18 @@ class FRUCApp(ctk.CTk):
         self.advanced_grid_row = row
 
     def _configure_drop(self) -> None:
-        if not (TkinterDnD and DND_FILES):
+        if not (TkinterDnD and DND_FILES and COPY and REFUSE_DROP):
             self._append_log("WARNING", "Drag-and-drop unavailable; install tkinterdnd2")
             self.drop_zone.configure(text="Click to add video files\n(install tkinterdnd2 for drag-and-drop)")
             return
         try:
             TkinterDnD._require(self)
-            for widget in (self, self.drop_zone, self.tree):
+            widgets = list(self.winfo_children())
+            for widget in widgets:
+                widgets.extend(widget.winfo_children())
                 widget.drop_target_register(DND_FILES)
+                widget.dnd_bind("<<DropEnter>>", self._drop_action)
+                widget.dnd_bind("<<DropPosition>>", self._drop_action)
                 widget.dnd_bind("<<Drop>>", self._on_drop)
         except Exception as exc:
             self._append_log("WARNING", f"Drag-and-drop unavailable: {exc}")
@@ -407,13 +413,18 @@ class FRUCApp(ctk.CTk):
             self._add_paths([Path(path) for path in selected])
 
     def _on_drop(self, event: object) -> str:
+        if self.renderer and self.renderer.running:
+            return str(REFUSE_DROP)
         data = getattr(event, "data", "")
         try:
             paths = [Path(value) for value in self.tk.splitlist(data)]
         except Exception:
             paths = [Path(data.strip("{}"))] if data else []
         self._add_paths(paths)
-        return "break"
+        return str(COPY)
+
+    def _drop_action(self, _event: object) -> str:
+        return str(REFUSE_DROP if self.renderer and self.renderer.running else COPY)
 
     def _add_paths(self, paths: list[Path]) -> None:
         expanded: list[Path] = []
