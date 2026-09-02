@@ -36,12 +36,12 @@ Drop files or a folder onto the add area. Folder drops scan supported videos in 
 ## Render behavior
 
 - Source FPS comes from `avg_frame_rate`, with `r_frame_rate` as a fallback. The rational value is preserved.
-- Default settings are 4× FRUC, Fast performance, grid 4, `linear` mixing, 100% blur amount, and H.264 Vulkan QP 28. HEVC and AV1 provide better compression but may be less convenient in older editors.
+- Default settings are 4× FRUC, Fast performance, grid 4, `linear` mixing, 100% blur amount, H.264 Vulkan QP 28, and one render at a time. The parallel-render control allows 1–4 simultaneous jobs; higher values share GPU, VRAM, and disk bandwidth.
 - Output names follow `inputname_FRUC4x_blur_59.94fps.mp4`. Existing files are never overwritten; a numbered suffix is added.
 - H.264/HEVC render through MPEG-TS; AV1 uses Matroska. When automatic MP4 remux is enabled, FFmpeg stream-copies the completed intermediate to MP4 with `+faststart`.
 - AAC, AC-3, E-AC-3, and MP3 audio are copied. Other audio formats are converted to high-bitrate AAC for container compatibility.
 - A failed render removes its incomplete intermediate. A failed or cancelled MP4 remux removes the incomplete MP4 but keeps the already-valid TS/MKV.
-- **Cancel Current** ends only the active item and continues. **Stop Queue** ends the active item and leaves remaining jobs waiting.
+- **Cancel Active** ends all currently rendering items and continues with waiting jobs. **Stop Queue** ends active items and leaves remaining jobs waiting.
 
 ## Presets and mixer support
 

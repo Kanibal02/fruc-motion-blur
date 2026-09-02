@@ -114,6 +114,7 @@ class FRUCApp(ctk.CTk):
         self.blur_var = ctk.DoubleVar(value=s.blur_amount)
         self.codec_var = ctk.StringVar(value=CODEC_LABELS.get(s.video_codec, CODEC_LABELS["h264"]))
         self.qp_var = ctk.IntVar(value=s.qp)
+        self.parallel_var = ctk.StringVar(value=str(s.parallel_jobs))
         self.auto_mp4_var = ctk.BooleanVar(value=s.auto_mp4)
         self.keep_ts_var = ctk.BooleanVar(value=s.keep_ts)
         self.same_output_var = ctk.BooleanVar(value=s.output_same_as_source)
@@ -242,7 +243,7 @@ class FRUCApp(ctk.CTk):
         controls.grid_columnconfigure(0, weight=1)
         self.start_button = ctk.CTkButton(controls, text="Start Queue", height=38, command=self._start_queue)
         self.start_button.grid(row=0, column=0, sticky="ew", padx=4)
-        self.cancel_button = ctk.CTkButton(controls, text="Cancel Current", width=116, state="disabled", fg_color="#905d2d", command=self._cancel_current)
+        self.cancel_button = ctk.CTkButton(controls, text="Cancel Active", width=116, state="disabled", fg_color="#905d2d", command=self._cancel_current)
         self.cancel_button.grid(row=0, column=1, padx=4)
         self.stop_button = ctk.CTkButton(controls, text="Stop Queue", width=100, state="disabled", fg_color="#8d3d47", command=self._stop_queue)
         self.stop_button.grid(row=0, column=2, padx=4)
@@ -365,6 +366,20 @@ class FRUCApp(ctk.CTk):
         qp = ctk.CTkSlider(quality, from_=18, to=40, number_of_steps=22, variable=self.qp_var, command=self._qp_changed)
         qp.grid(row=0, column=0, sticky="ew")
         self.setting_controls.append(qp)
+        row += 1
+
+        title("Parallel renders")
+        parallel = ctk.CTkSegmentedButton(
+            panel, values=["1", "2", "3", "4"], variable=self.parallel_var,
+            command=lambda _: self._settings_changed(),
+        )
+        parallel.grid(row=row, column=0, sticky="ew", padx=8)
+        self.setting_controls.append(parallel)
+        row += 1
+        ctk.CTkLabel(
+            panel, text="1 = safest • higher values share GPU, VRAM, and disk",
+            text_color="#8f98a6", anchor="w",
+        ).grid(row=row, column=0, sticky="ew", padx=8)
         row += 1
 
         title("Output")
@@ -593,7 +608,7 @@ class FRUCApp(ctk.CTk):
     def _cancel_current(self) -> None:
         if self.renderer:
             self.renderer.cancel_current()
-            self.stage_var.set("Cancelling current job…")
+            self.stage_var.set("Cancelling active jobs…")
 
     def _stop_queue(self) -> None:
         if self.renderer:
@@ -671,7 +686,7 @@ class FRUCApp(ctk.CTk):
                 self._update_row(job)
                 self._append_log("ERROR", f"{job.input_path.name}: {job.error}")
         elif kind == "queue_started":
-            self.stage_var.set("Queue started")
+            self.stage_var.set(f"Queue started • {event.get('parallel', 1)} parallel")
         elif kind == "status":
             job = self.jobs.get(str(event["job_id"]))
             if job:
@@ -801,6 +816,7 @@ class FRUCApp(ctk.CTk):
             blur_amount=float(self.blur_var.get()),
             video_codec=CODECS_BY_LABEL.get(self.codec_var.get(), "h264"),
             qp=int(self.qp_var.get()),
+            parallel_jobs=int(self.parallel_var.get()),
             auto_mp4=self.auto_mp4_var.get(),
             keep_ts=self.keep_ts_var.get(),
             output_same_as_source=self.same_output_var.get(),
@@ -900,7 +916,7 @@ class FRUCApp(ctk.CTk):
 
     def _on_close(self) -> None:
         if self.renderer and self.renderer.running:
-            if not messagebox.askyesno("Exit", "Stop the active FFmpeg job and exit?"):
+            if not messagebox.askyesno("Exit", "Stop the active FFmpeg jobs and exit?"):
                 return
             self._closing = True
             save_settings(self._collect_settings())

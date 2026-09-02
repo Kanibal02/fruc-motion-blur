@@ -47,6 +47,7 @@ class RenderSettings:
     blur_amount: float = 1.0
     video_codec: str = "h264"
     qp: int = 28
+    parallel_jobs: int = 1
     auto_mp4: bool = True
     keep_ts: bool = False
     output_same_as_source: bool = True
@@ -63,6 +64,7 @@ class RenderSettings:
         self.blur_amount = min(2.0, max(0.25, float(self.blur_amount)))
         self.video_codec = self.video_codec if self.video_codec in {"h264", "hevc", "av1"} else "h264"
         self.qp = min(40, max(18, int(self.qp)))
+        self.parallel_jobs = min(4, max(1, int(self.parallel_jobs)))
         self.appearance = self.appearance if self.appearance in {"Dark", "Light", "System"} else "Dark"
         self.device_index = min(15, max(0, int(self.device_index)))
         if not isinstance(self.output_directory, str):

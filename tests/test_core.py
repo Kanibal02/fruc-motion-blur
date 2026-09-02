@@ -124,24 +124,36 @@ class SettingsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "settings.json"
             save_settings(
-                RenderSettings(multiplier=16, blur_amount=1.5, video_codec="av1", qp=31), path
+                RenderSettings(
+                    multiplier=16, blur_amount=1.5, video_codec="av1", qp=31, parallel_jobs=3
+                ),
+                path,
             )
             data = json.loads(path.read_text(encoding="utf-8"))
             data["future_setting"] = True
             path.write_text(json.dumps(data), encoding="utf-8")
             loaded = load_settings(path)
             self.assertEqual(
-                (loaded.multiplier, loaded.blur_amount, loaded.video_codec, loaded.qp),
-                (16, 1.5, "av1", 31),
+                (
+                    loaded.multiplier, loaded.blur_amount, loaded.video_codec,
+                    loaded.qp, loaded.parallel_jobs,
+                ),
+                (16, 1.5, "av1", 31, 3),
             )
 
     def test_invalid_values_fall_back_or_clamp(self) -> None:
         settings = RenderSettings.from_dict(
-            {"multiplier": 99, "blur_amount": 9, "video_codec": "vp9", "qp": 100, "device_index": -5}
+            {
+                "multiplier": 99, "blur_amount": 9, "video_codec": "vp9",
+                "qp": 100, "parallel_jobs": 99, "device_index": -5,
+            }
         )
         self.assertEqual(
-            (settings.multiplier, settings.blur_amount, settings.video_codec, settings.qp, settings.device_index),
-            (4, 2.0, "h264", 40, 0),
+            (
+                settings.multiplier, settings.blur_amount, settings.video_codec,
+                settings.qp, settings.parallel_jobs, settings.device_index,
+            ),
+            (4, 2.0, "h264", 40, 4, 0),
         )
 
 
