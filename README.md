@@ -45,13 +45,14 @@ Drop files or a folder onto the add area. Folder drops scan supported videos in 
 
 ## Presets and mixer support
 
-At startup the app validates Vulkan plus `fruc_vulkan`, `libplacebo`, `h264_vulkan`, and each proposed libplacebo mixer against the selected Vulkan device. Unsupported mixers are not shown. The supplied build accepts:
+At startup the app validates Vulkan plus `fruc_vulkan`, `libplacebo`, `h264_vulkan`, and each proposed libplacebo mixer against the selected Vulkan device. Unsupported mixers are not shown. The app exposes the two useful blur mixers accepted by the supplied build:
 
 - `linear`
 - `hermite`
-- `oversample`
 
-It rejects `cubic`, so no cubic preset is exposed. **Sharp** uses `oversample`; **Soft** uses `hermite`. The exact filter and command are visible under **Advanced**.
+**Linear** is the default and produces more visible motion blur. **Hermite** produces less blur. `oversample` is intentionally hidden because its result is barely blurred, and `cubic` is rejected by the build. The exact filter and command are visible under **Advanced**.
+
+For 8×, the app uses two GPU mixing stages (8× → 2× → source FPS). A single 8× libplacebo stage exceeds its frame limit and aborts with `fidx < MAX_MIX_FRAMES`; the two-stage path succeeds with both mixers at tested source rates from 30 through 120 FPS.
 
 Custom Bezier temporal weighting, explicit shutter phase, and arbitrary sample-weight curves are not exposed because the detected FFmpeg/libplacebo interface provides only a named `frame_mixer`. Implementing those controls honestly would require a verified custom shader/filter path; a GUI slider alone would be cosmetic.
 

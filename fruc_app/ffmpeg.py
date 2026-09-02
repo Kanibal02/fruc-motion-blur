@@ -16,7 +16,7 @@ VIDEO_EXTENSIONS = {
     ".mpeg", ".mpg", ".mts", ".ts", ".vob", ".webm", ".wmv",
 }
 COPYABLE_AUDIO = {"aac", "ac3", "eac3", "mp3"}
-MIXER_CANDIDATES = ("linear", "hermite", "oversample")
+MIXER_CANDIDATES = ("linear", "hermite")
 
 
 @dataclass(slots=True)
@@ -170,10 +170,15 @@ def fps_filename_text(fps: Fraction) -> str:
 
 
 def filter_chain(probe: ProbeInfo, settings: RenderSettings) -> str:
-    return (
-        f"fruc_vulkan=fps=source_fps*{settings.multiplier}:perf={settings.performance}:grid={settings.grid},"
-        f"libplacebo=fps={probe.fps_rational}:frame_mixer={settings.frame_mixer}"
-    )
+    fruc = f"fruc_vulkan=fps=source_fps*{settings.multiplier}:perf={settings.performance}:grid={settings.grid}"
+    mixer = f"libplacebo=fps={probe.fps_rational}:frame_mixer={settings.frame_mixer}"
+    if settings.multiplier == 8:
+        midpoint = probe.fps * 2
+        mixer = (
+            f"libplacebo=fps={midpoint.numerator}/{midpoint.denominator}:frame_mixer={settings.frame_mixer},"
+            f"{mixer}"
+        )
+    return f"{fruc},{mixer}"
 
 
 def output_paths(input_path: Path, probe: ProbeInfo, settings: RenderSettings) -> tuple[Path, Path | None]:

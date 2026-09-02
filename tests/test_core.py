@@ -34,6 +34,15 @@ class FFMpegCoreTests(unittest.TestCase):
             "fruc_vulkan=fps=source_fps*4:perf=fast:grid=4,libplacebo=fps=60000/1001:frame_mixer=linear",
         )
 
+    def test_8x_uses_two_mixing_stages(self) -> None:
+        settings = RenderSettings(multiplier=8, performance="fast", grid=4, frame_mixer="linear")
+        self.assertEqual(
+            filter_chain(self.probe, settings),
+            "fruc_vulkan=fps=source_fps*8:perf=fast:grid=4,"
+            "libplacebo=fps=120000/1001:frame_mixer=linear,"
+            "libplacebo=fps=60000/1001:frame_mixer=linear",
+        )
+
     def test_command_initializes_vulkan_before_input_and_stays_hardware_native(self) -> None:
         command = build_render_command(Path("ffmpeg.exe"), Path("input.mp4"), Path("out.ts"), self.probe, RenderSettings())
         self.assertLess(command.index("-init_hw_device"), command.index("-i"))

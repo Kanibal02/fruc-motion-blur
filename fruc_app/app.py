@@ -41,9 +41,13 @@ PRESETS = {
     "Clean": (4, "linear"),
     "Extra smooth": (6, "linear"),
     "Insane": (8, "linear"),
-    "Sharp": (4, "oversample"),
     "Soft": (4, "hermite"),
 }
+MIXER_LABELS = {
+    "linear": "Linear — more motion blur (default)",
+    "hermite": "Hermite — less motion blur",
+}
+MIXERS_BY_LABEL = {label: mixer for mixer, label in MIXER_LABELS.items()}
 TERMINAL_STATUSES = {JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED}
 
 
@@ -100,7 +104,7 @@ class FRUCApp(ctk.CTk):
         self.multiplier_var = ctk.StringVar(value=f"{s.multiplier}×")
         self.performance_var = ctk.StringVar(value=s.performance.title())
         self.grid_var = ctk.StringVar(value=str(s.grid))
-        self.mixer_var = ctk.StringVar(value=s.frame_mixer)
+        self.mixer_var = ctk.StringVar(value=MIXER_LABELS.get(s.frame_mixer, MIXER_LABELS["linear"]))
         self.qp_var = ctk.IntVar(value=s.qp)
         self.auto_mp4_var = ctk.BooleanVar(value=s.auto_mp4)
         self.keep_ts_var = ctk.BooleanVar(value=s.keep_ts)
@@ -277,19 +281,25 @@ class FRUCApp(ctk.CTk):
         flow = ctk.CTkFrame(panel, fg_color="transparent")
         flow.grid(row=row, column=0, sticky="ew", padx=8)
         flow.grid_columnconfigure((0, 1), weight=1)
+        ctk.CTkLabel(flow, text="Performance", text_color="#8f98a6").grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(flow, text="Flow grid", text_color="#8f98a6").grid(row=0, column=1, sticky="w", padx=(4, 0))
         performance = ctk.CTkComboBox(
             flow, values=["Fast", "Medium", "Slow"], variable=self.performance_var,
             command=lambda _: self._settings_changed(),
         )
-        performance.grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        performance.grid(row=1, column=0, sticky="ew", padx=(0, 4))
         grid = ctk.CTkComboBox(
             flow, values=["1", "2", "4"], variable=self.grid_var,
             command=lambda _: self._settings_changed(),
         )
-        grid.grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        grid.grid(row=1, column=1, sticky="ew", padx=(4, 0))
         self.setting_controls += [performance, grid]
         row += 1
-        ctk.CTkLabel(panel, text="Performance / optical-flow grid", text_color="#8f98a6", anchor="w").grid(
+        ctk.CTkLabel(
+            panel,
+            text="Fast = quickest; Slow = best matching\nGrid 1 = finest detail; 4 = faster/coarser",
+            justify="left", text_color="#8f98a6", anchor="w",
+        ).grid(
             row=row, column=0, sticky="ew", padx=8
         )
         row += 1
@@ -579,9 +589,9 @@ class FRUCApp(ctk.CTk):
             if caps.ready:
                 self.capability_var.set("Vulkan ready")
                 self.capability_label.configure(text_color="#65d79a")
-                self.mixer_combo.configure(values=list(caps.mixers))
-                if self.mixer_var.get() not in caps.mixers:
-                    self.mixer_var.set(caps.mixers[0])
+                self.mixer_combo.configure(values=[MIXER_LABELS[mixer] for mixer in caps.mixers])
+                if MIXERS_BY_LABEL.get(self.mixer_var.get()) not in caps.mixers:
+                    self.mixer_var.set(MIXER_LABELS[caps.mixers[0]])
                 self._append_log("INFO", f"{caps.version}; mixers: {', '.join(caps.mixers)}")
             else:
                 self.capability_var.set("Missing: " + ", ".join(caps.missing or ["frame mixer"]))
@@ -685,7 +695,7 @@ class FRUCApp(ctk.CTk):
         if self.capabilities and mixer not in self.capabilities.mixers:
             mixer = self.capabilities.mixers[0]
         self.multiplier_var.set(f"{multiplier}×")
-        self.mixer_var.set(mixer)
+        self.mixer_var.set(MIXER_LABELS[mixer])
         for job in self.jobs.values():
             self._update_row(job)
         self._update_diagnostics()
@@ -729,7 +739,7 @@ class FRUCApp(ctk.CTk):
             multiplier=int(self.multiplier_var.get().rstrip("×")),
             performance=self.performance_var.get().lower(),
             grid=int(self.grid_var.get()),
-            frame_mixer=self.mixer_var.get(),
+            frame_mixer=MIXERS_BY_LABEL.get(self.mixer_var.get(), "linear"),
             qp=int(self.qp_var.get()),
             auto_mp4=self.auto_mp4_var.get(),
             keep_ts=self.keep_ts_var.get(),
