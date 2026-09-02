@@ -48,6 +48,12 @@ MIXER_LABELS = {
     "hermite": "Hermite — less motion blur",
 }
 MIXERS_BY_LABEL = {label: mixer for mixer, label in MIXER_LABELS.items()}
+CODEC_LABELS = {
+    "h264": "H.264 — most compatible",
+    "hevc": "H.265 / HEVC — better compression",
+    "av1": "AV1 — best compression / newer",
+}
+CODECS_BY_LABEL = {label: codec for codec, label in CODEC_LABELS.items()}
 TERMINAL_STATUSES = {JobStatus.DONE, JobStatus.FAILED, JobStatus.CANCELLED}
 
 
@@ -106,6 +112,7 @@ class FRUCApp(ctk.CTk):
         self.grid_var = ctk.StringVar(value=str(s.grid))
         self.mixer_var = ctk.StringVar(value=MIXER_LABELS.get(s.frame_mixer, MIXER_LABELS["linear"]))
         self.blur_var = ctk.DoubleVar(value=s.blur_amount)
+        self.codec_var = ctk.StringVar(value=CODEC_LABELS.get(s.video_codec, CODEC_LABELS["h264"]))
         self.qp_var = ctk.IntVar(value=s.qp)
         self.auto_mp4_var = ctk.BooleanVar(value=s.auto_mp4)
         self.keep_ts_var = ctk.BooleanVar(value=s.keep_ts)
@@ -337,7 +344,19 @@ class FRUCApp(ctk.CTk):
         ).grid(row=row, column=0, sticky="ew", padx=8)
         row += 1
 
-        title("H.264 Vulkan quality")
+        title("Video codec / quality")
+        self.codec_combo = ctk.CTkComboBox(
+            panel, values=[self.codec_var.get()], variable=self.codec_var,
+            command=lambda _: self._settings_changed(),
+        )
+        self.codec_combo.grid(row=row, column=0, sticky="ew", padx=8)
+        self.setting_controls.append(self.codec_combo)
+        row += 1
+        ctk.CTkLabel(
+            panel, text="Same QP control • H.264 is safest for video editors",
+            text_color="#8f98a6", anchor="w",
+        ).grid(row=row, column=0, sticky="ew", padx=8)
+        row += 1
         quality = ctk.CTkFrame(panel, fg_color="transparent")
         quality.grid(row=row, column=0, sticky="ew", padx=8)
         quality.grid_columnconfigure(0, weight=1)
@@ -366,7 +385,10 @@ class FRUCApp(ctk.CTk):
         auto.grid(row=row, column=0, sticky="w", padx=8, pady=3)
         self.setting_controls.append(auto)
         row += 1
-        keep = ctk.CTkCheckBox(panel, text="Keep TS", variable=self.keep_ts_var, command=self._settings_changed)
+        keep = ctk.CTkCheckBox(
+            panel, text="Keep intermediate (TS/MKV)", variable=self.keep_ts_var,
+            command=self._settings_changed,
+        )
         keep.grid(row=row, column=0, sticky="w", padx=8, pady=3)
         self.setting_controls.append(keep)
         row += 1
@@ -540,6 +562,9 @@ class FRUCApp(ctk.CTk):
             messagebox.showerror("Cannot render", "Required FFmpeg/Vulkan capabilities are not ready.")
             return
         settings = self._collect_settings()
+        if settings.video_codec not in self.capabilities.codecs:
+            messagebox.showerror("Video codec", "The selected codec is not supported by this Vulkan device.")
+            return
         if not settings.output_same_as_source:
             if not settings.output_directory:
                 messagebox.showerror("Output folder", "Choose a custom output folder or save beside the source.")
@@ -612,7 +637,13 @@ class FRUCApp(ctk.CTk):
                 self.mixer_combo.configure(values=[MIXER_LABELS[mixer] for mixer in caps.mixers])
                 if MIXERS_BY_LABEL.get(self.mixer_var.get()) not in caps.mixers:
                     self.mixer_var.set(MIXER_LABELS[caps.mixers[0]])
-                self._append_log("INFO", f"{caps.version}; mixers: {', '.join(caps.mixers)}")
+                self.codec_combo.configure(values=[CODEC_LABELS[codec] for codec in caps.codecs])
+                if CODECS_BY_LABEL.get(self.codec_var.get()) not in caps.codecs:
+                    self.codec_var.set(CODEC_LABELS[caps.codecs[0]])
+                self._append_log(
+                    "INFO",
+                    f"{caps.version}; mixers: {', '.join(caps.mixers)}; codecs: {', '.join(caps.codecs)}",
+                )
             else:
                 self.capability_var.set("Missing: " + ", ".join(caps.missing or ["frame mixer"]))
                 self.capability_label.configure(text_color="#ff7272")
@@ -768,6 +799,7 @@ class FRUCApp(ctk.CTk):
             grid=int(self.grid_var.get()),
             frame_mixer=MIXERS_BY_LABEL.get(self.mixer_var.get(), "linear"),
             blur_amount=float(self.blur_var.get()),
+            video_codec=CODECS_BY_LABEL.get(self.codec_var.get(), "h264"),
             qp=int(self.qp_var.get()),
             auto_mp4=self.auto_mp4_var.get(),
             keep_ts=self.keep_ts_var.get(),

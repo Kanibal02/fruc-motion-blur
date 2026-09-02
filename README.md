@@ -7,7 +7,7 @@ fruc_vulkan=fps=source_fps*MULTIPLIER:perf=PERF:grid=GRID,
 libplacebo=fps=SOURCE_FPS:frame_mixer=MIXER
 ```
 
-The input is Vulkan-decoded, both filters remain on GPU, and the result is encoded with `h264_vulkan`. No CPU interpolation or `hwdownload` path is used.
+The input is Vulkan-decoded, both filters remain on GPU, and the result is encoded with the selected H.264, H.265/HEVC, or AV1 Vulkan encoder. No CPU interpolation or `hwdownload` path is used.
 
 ## Requirements
 
@@ -36,16 +36,16 @@ Drop files or a folder onto the add area. Folder drops scan supported videos in 
 ## Render behavior
 
 - Source FPS comes from `avg_frame_rate`, with `r_frame_rate` as a fallback. The rational value is preserved.
-- Default settings are 4× FRUC, Fast performance, grid 4, `linear` mixing, 100% blur amount, and H.264 Vulkan QP 28.
+- Default settings are 4× FRUC, Fast performance, grid 4, `linear` mixing, 100% blur amount, and H.264 Vulkan QP 28. HEVC and AV1 provide better compression but may be less convenient in older editors.
 - Output names follow `inputname_FRUC4x_blur_59.94fps.mp4`. Existing files are never overwritten; a numbered suffix is added.
-- The video is first rendered to MPEG-TS. When automatic MP4 remux is enabled, FFmpeg stream-copies the completed TS to MP4 with `+faststart`.
+- H.264/HEVC render through MPEG-TS; AV1 uses Matroska. When automatic MP4 remux is enabled, FFmpeg stream-copies the completed intermediate to MP4 with `+faststart`.
 - AAC, AC-3, E-AC-3, and MP3 audio are copied. Other audio formats are converted to high-bitrate AAC for container compatibility.
-- A failed render removes its incomplete TS. A failed or cancelled MP4 remux removes the incomplete MP4 but keeps the already-valid TS.
+- A failed render removes its incomplete intermediate. A failed or cancelled MP4 remux removes the incomplete MP4 but keeps the already-valid TS/MKV.
 - **Cancel Current** ends only the active item and continues. **Stop Queue** ends the active item and leaves remaining jobs waiting.
 
 ## Presets and mixer support
 
-At startup the app validates Vulkan plus `fruc_vulkan`, `libplacebo`, `h264_vulkan`, and each proposed libplacebo mixer against the selected Vulkan device. Unsupported mixers are not shown. The app exposes the two useful blur mixers accepted by the supplied build:
+At startup the app validates Vulkan plus `fruc_vulkan`, `libplacebo`, every available Vulkan codec, and each proposed libplacebo mixer against the selected Vulkan device. Unsupported codecs and mixers are not shown. The app exposes the two useful blur mixers accepted by the supplied build:
 
 - `linear`
 - `hermite`

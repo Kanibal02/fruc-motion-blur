@@ -45,6 +45,7 @@ class RenderSettings:
     grid: int = 4
     frame_mixer: str = "linear"
     blur_amount: float = 1.0
+    video_codec: str = "h264"
     qp: int = 28
     auto_mp4: bool = True
     keep_ts: bool = False
@@ -60,6 +61,7 @@ class RenderSettings:
         self.grid = self.grid if self.grid in {1, 2, 4} else 4
         self.frame_mixer = self.frame_mixer if self.frame_mixer else "linear"
         self.blur_amount = min(2.0, max(0.25, float(self.blur_amount)))
+        self.video_codec = self.video_codec if self.video_codec in {"h264", "hevc", "av1"} else "h264"
         self.qp = min(40, max(18, int(self.qp)))
         self.appearance = self.appearance if self.appearance in {"Dark", "Light", "System"} else "Dark"
         self.device_index = min(15, max(0, int(self.device_index)))

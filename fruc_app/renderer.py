@@ -89,9 +89,11 @@ class Renderer:
         job.probe = probe_media(self.ffprobe, job.input_path)
         self._emit("probed", job_id=job.id, probe=job.probe)
 
-        ts_path, mp4_path = output_paths(job.input_path, job.probe, settings)
-        ts_path.parent.mkdir(parents=True, exist_ok=True)
-        render_command = build_render_command(self.ffmpeg, job.input_path, ts_path, job.probe, settings)
+        intermediate_path, mp4_path = output_paths(job.input_path, job.probe, settings)
+        intermediate_path.parent.mkdir(parents=True, exist_ok=True)
+        render_command = build_render_command(
+            self.ffmpeg, job.input_path, intermediate_path, job.probe, settings
+        )
         filter_option = "-filter_complex" if "-filter_complex" in render_command else "-vf"
         self._emit("command", job_id=job.id, command=command_text(render_command), filter=render_command[render_command.index(filter_option) + 1])
         self._status(job, JobStatus.RENDERING)
@@ -99,17 +101,17 @@ class Renderer:
         try:
             return_code = self._run_process(render_command, job, "Rendering")
         except Cancelled:
-            self._delete_if_present(ts_path)
+            self._delete_if_present(intermediate_path)
             raise
         if return_code:
-            self._delete_if_present(ts_path)
+            self._delete_if_present(intermediate_path)
             raise RuntimeError(f"FFmpeg render failed with exit code {return_code}")
-        if not ts_path.is_file() or ts_path.stat().st_size == 0:
+        if not intermediate_path.is_file() or intermediate_path.stat().st_size == 0:
             raise RuntimeError("FFmpeg completed without producing an output file")
 
-        output = ts_path
+        output = intermediate_path
         if mp4_path:
-            remux_command = build_remux_command(self.ffmpeg, ts_path, mp4_path)
+            remux_command = build_remux_command(self.ffmpeg, intermediate_path, mp4_path)
             self._emit("log", level="INFO", message=f"Remux command: {command_text(remux_command)}")
             self._status(job, JobStatus.REMUXING)
             try:
@@ -119,12 +121,17 @@ class Renderer:
                 raise
             if return_code:
                 self._delete_if_present(mp4_path)
-                raise RuntimeError(f"MP4 remux failed; valid TS kept at {ts_path} (exit code {return_code})")
+                raise RuntimeError(
+                    f"MP4 remux failed; valid intermediate kept at {intermediate_path} "
+                    f"(exit code {return_code})"
+                )
             if not mp4_path.is_file() or mp4_path.stat().st_size == 0:
-                raise RuntimeError(f"MP4 remux produced no file; valid TS kept at {ts_path}")
+                raise RuntimeError(
+                    f"MP4 remux produced no file; valid intermediate kept at {intermediate_path}"
+                )
             output = mp4_path
             if not settings.keep_ts:
-                self._delete_if_present(ts_path)
+                self._delete_if_present(intermediate_path)
 
         job.output_path = output
         job.error = ""

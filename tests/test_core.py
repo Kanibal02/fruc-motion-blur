@@ -72,6 +72,19 @@ class FFMpegCoreTests(unittest.TestCase):
         self.assertEqual(command[command.index("-c:v") + 1], "h264_vulkan")
         self.assertNotIn("hwdownload", " ".join(command))
 
+    def test_hevc_and_av1_use_their_vulkan_encoder_and_container(self) -> None:
+        for codec, encoder, container in (
+            ("hevc", "hevc_vulkan", "mpegts"),
+            ("av1", "av1_vulkan", "matroska"),
+        ):
+            with self.subTest(codec=codec):
+                command = build_render_command(
+                    Path("ffmpeg.exe"), Path("input.mp4"), Path("out"),
+                    self.probe, RenderSettings(video_codec=codec),
+                )
+                self.assertEqual(command[command.index("-c:v") + 1], encoder)
+                self.assertEqual(command[command.index("-f") + 1], container)
+
     def test_incompatible_audio_uses_aac(self) -> None:
         probe = ProbeInfo(640, 360, Fraction(30), 1, audio_codec="opus")
         command = build_render_command(Path("ffmpeg.exe"), Path("in.webm"), Path("out.ts"), probe, RenderSettings())
@@ -91,6 +104,16 @@ class FFMpegCoreTests(unittest.TestCase):
             self.assertIn("(1)", next_ts.name)
             self.assertIn("(1)", next_mp4.name)
 
+    def test_av1_uses_mkv_intermediate_and_identifiable_mp4_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "clip.mp4"
+            source.touch()
+            intermediate, mp4 = output_paths(
+                source, self.probe, RenderSettings(video_codec="av1")
+            )
+            self.assertEqual(intermediate.name, "clip_FRUC4x_blur_59.94fps_AV1.temp.mkv")
+            self.assertEqual(mp4.name, "clip_FRUC4x_blur_59.94fps_AV1.mp4")
+
     def test_progress_parses_microseconds_and_timecode(self) -> None:
         self.assertEqual(progress_seconds({"out_time_us": "2500000"}), 2.5)
         self.assertEqual(progress_seconds({"out_time": "01:02:03.500000"}), 3723.5)
@@ -100,16 +123,26 @@ class SettingsTests(unittest.TestCase):
     def test_settings_round_trip_and_unknown_keys(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "settings.json"
-            save_settings(RenderSettings(multiplier=16, blur_amount=1.5, qp=31), path)
+            save_settings(
+                RenderSettings(multiplier=16, blur_amount=1.5, video_codec="av1", qp=31), path
+            )
             data = json.loads(path.read_text(encoding="utf-8"))
             data["future_setting"] = True
             path.write_text(json.dumps(data), encoding="utf-8")
             loaded = load_settings(path)
-            self.assertEqual((loaded.multiplier, loaded.blur_amount, loaded.qp), (16, 1.5, 31))
+            self.assertEqual(
+                (loaded.multiplier, loaded.blur_amount, loaded.video_codec, loaded.qp),
+                (16, 1.5, "av1", 31),
+            )
 
     def test_invalid_values_fall_back_or_clamp(self) -> None:
-        settings = RenderSettings.from_dict({"multiplier": 99, "blur_amount": 9, "qp": 100, "device_index": -5})
-        self.assertEqual((settings.multiplier, settings.blur_amount, settings.qp, settings.device_index), (4, 2.0, 40, 0))
+        settings = RenderSettings.from_dict(
+            {"multiplier": 99, "blur_amount": 9, "video_codec": "vp9", "qp": 100, "device_index": -5}
+        )
+        self.assertEqual(
+            (settings.multiplier, settings.blur_amount, settings.video_codec, settings.qp, settings.device_index),
+            (4, 2.0, "h264", 40, 0),
+        )
 
 
 if __name__ == "__main__":

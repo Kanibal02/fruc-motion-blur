@@ -17,6 +17,16 @@ VIDEO_EXTENSIONS = {
 }
 COPYABLE_AUDIO = {"aac", "ac3", "eac3", "mp3"}
 MIXER_CANDIDATES = ("linear", "hermite")
+VIDEO_ENCODERS = {
+    "h264": "h264_vulkan",
+    "hevc": "hevc_vulkan",
+    "av1": "av1_vulkan",
+}
+VIDEO_CONTAINERS = {
+    "h264": ("ts", "mpegts"),
+    "hevc": ("ts", "mpegts"),
+    "av1": ("mkv", "matroska"),
+}
 
 
 @dataclass(slots=True)
@@ -24,7 +34,7 @@ class Capabilities:
     version: str
     fruc_vulkan: bool
     libplacebo: bool
-    h264_vulkan: bool
+    codecs: tuple[str, ...]
     vulkan_device: bool
     pipeline: bool
     mixers: tuple[str, ...]
@@ -34,7 +44,7 @@ class Capabilities:
         checks = {
             "fruc_vulkan filter": self.fruc_vulkan,
             "libplacebo filter": self.libplacebo,
-            "h264_vulkan encoder": self.h264_vulkan,
+            "Vulkan video encoder": bool(self.codecs),
             "Vulkan device": self.vulkan_device,
             "Vulkan FRUC/encode pipeline": self.pipeline,
         }
@@ -126,7 +136,7 @@ def _validate_vulkan(ffmpeg: Path, device_index: int, mixer: str | None = None) 
         return False
 
 
-def _validate_pipeline(ffmpeg: Path, device_index: int, mixer: str) -> bool:
+def _validate_pipeline(ffmpeg: Path, device_index: int, mixer: str, encoder: str) -> bool:
     command = [
         str(ffmpeg), "-hide_banner", "-loglevel", "error", "-y",
         "-init_hw_device", f"vulkan=vk:{device_index}", "-filter_hw_device", "vk",
@@ -135,7 +145,7 @@ def _validate_pipeline(ffmpeg: Path, device_index: int, mixer: str) -> bool:
             "format=nv12,hwupload,"
             f"fruc_vulkan=fps=source_fps*2:perf=fast:grid=4,libplacebo=fps=30:frame_mixer={mixer}"
         ),
-        "-c:v", "h264_vulkan", "-qp", "34", "-f", "null", "-",
+        "-c:v", encoder, "-qp", "34", "-f", "null", "-",
     ]
     try:
         return _capture(command, 20).returncode == 0
@@ -150,17 +160,18 @@ def detect_capabilities(ffmpeg: Path, device_index: int = 0) -> Capabilities:
     version = next((line.strip() for line in version_text.splitlines() if line.startswith("ffmpeg version")), "Unknown")
     has_fruc = " fruc_vulkan " in filters
     has_libplacebo = " libplacebo " in filters
-    has_encoder = " h264_vulkan " in encoders
     vulkan = _validate_vulkan(ffmpeg, device_index)
     mixers = tuple(
         mixer for mixer in MIXER_CANDIDATES
         if has_libplacebo and vulkan and _validate_vulkan(ffmpeg, device_index, mixer)
     )
-    pipeline = bool(
-        has_fruc and has_libplacebo and has_encoder and vulkan and mixers
-        and _validate_pipeline(ffmpeg, device_index, mixers[0])
+    codecs = tuple(
+        codec for codec, encoder in VIDEO_ENCODERS.items()
+        if f" {encoder} " in encoders
+        and has_fruc and has_libplacebo and vulkan and mixers
+        and _validate_pipeline(ffmpeg, device_index, mixers[0], encoder)
     )
-    return Capabilities(version, has_fruc, has_libplacebo, has_encoder, vulkan, pipeline, mixers)
+    return Capabilities(version, has_fruc, has_libplacebo, codecs, vulkan, bool(codecs), mixers)
 
 
 def fps_filename_text(fps: Fraction) -> str:
@@ -204,24 +215,29 @@ def filter_chain(probe: ProbeInfo, settings: RenderSettings) -> str:
 def output_paths(input_path: Path, probe: ProbeInfo, settings: RenderSettings) -> tuple[Path, Path | None]:
     directory = input_path.parent if settings.output_same_as_source else Path(settings.output_directory)
     stem = f"{input_path.stem}_FRUC{settings.multiplier}x_blur_{fps_filename_text(probe.fps)}fps"
+    if settings.video_codec != "h264":
+        stem += f"_{settings.video_codec.upper()}"
+    extension, _ = VIDEO_CONTAINERS[settings.video_codec]
     for suffix in range(10000):
         tag = "" if suffix == 0 else f" ({suffix})"
         base = directory / f"{stem}{tag}"
         mp4 = Path(f"{base}.mp4") if settings.auto_mp4 else None
-        ts = Path(f"{base}.ts") if settings.keep_ts or not settings.auto_mp4 else Path(f"{base}.temp.ts")
-        if not ts.exists() and (mp4 is None or not mp4.exists()) and ts.resolve() != input_path.resolve():
-            return ts, mp4
+        intermediate = Path(f"{base}.{extension}") if settings.keep_ts or not settings.auto_mp4 else Path(f"{base}.temp.{extension}")
+        if not intermediate.exists() and (mp4 is None or not mp4.exists()) and intermediate.resolve() != input_path.resolve():
+            return intermediate, mp4
     raise RuntimeError("Could not find an available output filename")
 
 
 def build_render_command(
     ffmpeg: Path,
     input_path: Path,
-    ts_path: Path,
+    intermediate_path: Path,
     probe: ProbeInfo,
     settings: RenderSettings,
 ) -> list[str]:
     audio = ["-c:a", "copy"] if probe.audio_codec in COPYABLE_AUDIO else ["-c:a", "aac", "-b:a", "320k"]
+    encoder = VIDEO_ENCODERS[settings.video_codec]
+    _, container = VIDEO_CONTAINERS[settings.video_codec]
     graph = filter_chain(probe, settings)
     video_filter = ["-filter_complex", graph, "-map", "[outv]"] if settings.multiplier >= 12 else ["-vf", graph, "-map", "0:v:0"]
     return [
@@ -231,16 +247,16 @@ def build_render_command(
         "-hwaccel", "vulkan", "-hwaccel_output_format", "vulkan",
         "-i", str(input_path),
         *video_filter, "-map", "0:a:0?",
-        "-c:v", "h264_vulkan", "-qp", str(settings.qp),
+        "-c:v", encoder, "-qp", str(settings.qp),
         *audio,
         "-progress", "pipe:1", "-nostats", "-stats_period", "0.25",
-        "-f", "mpegts", str(ts_path),
+        "-f", container, str(intermediate_path),
     ]
 
 
-def build_remux_command(ffmpeg: Path, ts_path: Path, mp4_path: Path) -> list[str]:
+def build_remux_command(ffmpeg: Path, intermediate_path: Path, mp4_path: Path) -> list[str]:
     return [
-        str(ffmpeg), "-y", "-i", str(ts_path),
+        str(ffmpeg), "-y", "-i", str(intermediate_path),
         "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
         "-movflags", "+faststart", "-progress", "pipe:1", "-nostats",
         "-stats_period", "0.25", str(mp4_path),
