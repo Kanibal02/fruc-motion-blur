@@ -171,7 +171,7 @@ def fps_filename_text(fps: Fraction) -> str:
 
 def filter_chain(probe: ProbeInfo, settings: RenderSettings) -> str:
     fruc = f"fruc_vulkan=fps=source_fps*{settings.multiplier}:perf={settings.performance}:grid={settings.grid}"
-    midpoint = {8: 2, 12: 3, 16: 4}.get(settings.multiplier)
+    midpoint = {8: 2, 16: 2}.get(settings.multiplier)
     stage_factors = (midpoint, 1) if midpoint else (1,)
     blur = f"{settings.blur_amount:.2f}".rstrip("0").rstrip(".")
     dictionary_separator = r"\\:"
@@ -185,7 +185,20 @@ def filter_chain(probe: ProbeInfo, settings: RenderSettings) -> str:
                 f"frame_mixer_preset={settings.frame_mixer}{dictionary_separator}frame_mixer_blur={blur}"
             )
         mixers.append(mixer)
-    return ",".join((fruc, *mixers))
+    mixer_chain = ",".join(mixers)
+    if settings.multiplier < 12:
+        return f"{fruc},{mixer_chain}"
+
+    paired_fps = probe.fps * (settings.multiplier // 2)
+    paired_rate = f"{paired_fps.numerator}/{paired_fps.denominator}"
+    paired_pts = f"N/(({paired_rate})*TB)"
+    return (
+        f"[0:v]{fruc},split=2[even0][odd0];"
+        f"[even0]framestep=2,setpts={paired_pts}[even];"
+        f"[odd0]trim=start_frame=1,framestep=2,setpts={paired_pts}[odd];"
+        f"[even][odd]blend_vulkan=all_mode=average[paired];"
+        f"[paired]{mixer_chain}[outv]"
+    )
 
 
 def output_paths(input_path: Path, probe: ProbeInfo, settings: RenderSettings) -> tuple[Path, Path | None]:
@@ -209,14 +222,15 @@ def build_render_command(
     settings: RenderSettings,
 ) -> list[str]:
     audio = ["-c:a", "copy"] if probe.audio_codec in COPYABLE_AUDIO else ["-c:a", "aac", "-b:a", "320k"]
+    graph = filter_chain(probe, settings)
+    video_filter = ["-filter_complex", graph, "-map", "[outv]"] if settings.multiplier >= 12 else ["-vf", graph, "-map", "0:v:0"]
     return [
         str(ffmpeg), "-y", "-benchmark",
         "-init_hw_device", f"vulkan=vk:{settings.device_index}",
         "-filter_hw_device", "vk",
         "-hwaccel", "vulkan", "-hwaccel_output_format", "vulkan",
         "-i", str(input_path),
-        "-map", "0:v:0", "-map", "0:a:0?",
-        "-vf", filter_chain(probe, settings),
+        *video_filter, "-map", "0:a:0?",
         "-c:v", "h264_vulkan", "-qp", str(settings.qp),
         *audio,
         "-progress", "pipe:1", "-nostats", "-stats_period", "0.25",

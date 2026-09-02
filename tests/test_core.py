@@ -43,13 +43,22 @@ class FFMpegCoreTests(unittest.TestCase):
             "libplacebo=fps=60000/1001:frame_mixer=linear",
         )
 
-    def test_12x_and_16x_use_balanced_mixing_stages(self) -> None:
-        for multiplier, midpoint in ((12, "180000/1001"), (16, "240000/1001")):
+    def test_12x_and_16x_pair_frames_before_safe_rate_mixing(self) -> None:
+        for multiplier, paired_rate, mixer_count in ((12, "360000/1001", 1), (16, "480000/1001", 2)):
             with self.subTest(multiplier=multiplier):
                 chain = filter_chain(self.probe, RenderSettings(multiplier=multiplier))
                 self.assertIn(f"fps=source_fps*{multiplier}", chain)
-                self.assertIn(f"libplacebo=fps={midpoint}", chain)
-                self.assertEqual(chain.count("libplacebo="), 2)
+                self.assertIn(f"setpts=N/(({paired_rate})*TB)", chain)
+                self.assertIn("blend_vulkan=all_mode=average", chain)
+                self.assertEqual(chain.count("libplacebo="), mixer_count)
+
+    def test_16x_command_uses_complex_video_map(self) -> None:
+        command = build_render_command(
+            Path("ffmpeg.exe"), Path("input.mp4"), Path("out.ts"),
+            self.probe, RenderSettings(multiplier=16),
+        )
+        self.assertIn("-filter_complex", command)
+        self.assertEqual(command[command.index("-map") + 1], "[outv]")
 
     def test_blur_amount_uses_custom_temporal_kernel(self) -> None:
         chain = filter_chain(self.probe, RenderSettings(multiplier=4, blur_amount=1.5))

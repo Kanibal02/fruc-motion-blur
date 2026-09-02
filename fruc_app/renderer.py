@@ -92,7 +92,8 @@ class Renderer:
         ts_path, mp4_path = output_paths(job.input_path, job.probe, settings)
         ts_path.parent.mkdir(parents=True, exist_ok=True)
         render_command = build_render_command(self.ffmpeg, job.input_path, ts_path, job.probe, settings)
-        self._emit("command", job_id=job.id, command=command_text(render_command), filter=render_command[render_command.index("-vf") + 1])
+        filter_option = "-filter_complex" if "-filter_complex" in render_command else "-vf"
+        self._emit("command", job_id=job.id, command=command_text(render_command), filter=render_command[render_command.index(filter_option) + 1])
         self._status(job, JobStatus.RENDERING)
 
         try:

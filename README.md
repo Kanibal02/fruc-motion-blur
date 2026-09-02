@@ -52,7 +52,7 @@ At startup the app validates Vulkan plus `fruc_vulkan`, `libplacebo`, `h264_vulk
 
 **Linear** is the default and produces more visible motion blur. **Hermite** produces less blur. `oversample` is intentionally hidden because its result is barely blurred, and `cubic` is rejected by the build. The exact filter and command are visible under **Advanced**.
 
-Higher multipliers use balanced GPU mixing stages: 8× → 2× → source FPS, 12× → 3× → source FPS, and 16× → 4× → source FPS. A single high-ratio libplacebo stage exceeds its frame limit; staged mixing succeeds at tested source rates from 30 through 120 FPS.
+Higher multipliers use safe GPU reductions. 8× uses staged libplacebo mixing. For 12×/16×, `blend_vulkan` first averages adjacent generated-frame pairs before libplacebo mixing; this preserves every sample while avoiding libplacebo's broken timing for streams above 1000 FPS.
 
 **Blur amount** independently adjusts libplacebo's temporal-kernel width from 25% to 200%. The 100% default is byte-for-byte equivalent to the previous filter configuration; lower values shorten the trail and higher values lengthen it without changing the FRUC multiplier.
 
