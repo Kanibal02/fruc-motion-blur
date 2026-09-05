@@ -3,23 +3,56 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import sys
 import threading
 import time
 import webbrowser
-from collections import deque
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from tkinter import Menu, filedialog, messagebox, ttk
 
-import customtkinter as ctk
-
-try:
-    from tkinterdnd2 import COPY, DND_FILES, REFUSE_DROP, TkinterDnD
-except ImportError:
-    COPY = None
-    DND_FILES = None
-    REFUSE_DROP = None
-    TkinterDnD = None
+from PySide6.QtCore import QEasingCurve, QMimeData, QPropertyAnimation, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QAction,
+    QActionGroup,
+    QBrush,
+    QCloseEvent,
+    QColor,
+    QFont,
+    QIcon,
+    QPainter,
+    QPalette,
+    QPixmap,
+)
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QApplication,
+    QButtonGroup,
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QGridLayout,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMenu,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSlider,
+    QStyle,
+    QToolButton,
+    QTreeWidget,
+    QTreeWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .ffmpeg import (
     VIDEO_EXTENSIONS,
@@ -63,437 +96,726 @@ def setup_logging() -> logging.Logger:
     logger.setLevel(logging.INFO)
     if not logger.handlers:
         handler = RotatingFileHandler(
-            LOG_DIR / "fruc-motion-blur.log", maxBytes=2_000_000, backupCount=3, encoding="utf-8"
+            LOG_DIR / "fruc-motion-blur.log",
+            maxBytes=2_000_000,
+            backupCount=3,
+            encoding="utf-8",
         )
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         logger.addHandler(handler)
     return logger
 
 
-class FRUCApp(ctk.CTk):
-    def __init__(self) -> None:
-        self.settings = load_settings()
-        ctk.set_appearance_mode(self.settings.appearance)
-        ctk.set_default_color_theme("blue")
-        super().__init__()
-        self.title("FRUC Motion Blur")
-        self.geometry("1280x820")
-        self.minsize(1040, 680)
-        self.protocol("WM_DELETE_WINDOW", self._on_close)
+def app_icon() -> QIcon:
+    pixmap = QPixmap(64, 64)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor("#4395f7"))
+    painter.drawRoundedRect(3, 3, 58, 58, 15, 15)
+    painter.setBrush(QColor("#0a1019"))
+    painter.drawRoundedRect(13, 13, 38, 38, 9, 9)
+    painter.setPen(QColor("#f7fbff"))
+    painter.setFont(QFont("Segoe UI", 22, QFont.Weight.Bold))
+    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "F")
+    painter.end()
+    return QIcon(pixmap)
 
+
+def theme_colors(dark: bool) -> dict[str, str]:
+    if dark:
+        return {
+            "bg": "#080c12", "panel": "#0c121b", "card": "#111925",
+            "raised": "#162131", "field": "#0b111a", "hover": "#1b293c",
+            "border": "#26354a", "text": "#f4f7fb", "muted": "#8998ad",
+            "accent": "#4395f7", "accent_hover": "#62a7fa", "selection": "#214f80",
+            "track": "#263247", "success": "#45d58a", "warning": "#e1a14d",
+            "danger": "#ee6474",
+        }
+    return {
+        "bg": "#edf2f8", "panel": "#f4f7fb", "card": "#ffffff",
+        "raised": "#f4f7fb", "field": "#f7f9fc", "hover": "#e7eef8",
+        "border": "#d2dce8", "text": "#172033", "muted": "#65758b",
+        "accent": "#287bdc", "accent_hover": "#1769c6", "selection": "#d8eaff",
+        "track": "#d8e1ec", "success": "#168651", "warning": "#ad681c",
+        "danger": "#c63d50",
+    }
+
+
+def theme_stylesheet(c: dict[str, str]) -> str:
+    return f"""
+        * {{ font-family: "Segoe UI"; font-size: 10pt; color: {c['text']}; }}
+        QWidget#root {{ background: {c['bg']}; }}
+        QFrame#appHeader {{ background: {c['panel']}; border-bottom: 1px solid {c['border']}; }}
+        QFrame#card, QFrame#settingsCard, QFrame#advancedCard {{
+            background: {c['card']}; border: 1px solid {c['border']}; border-radius: 13px;
+        }}
+        QLabel#brandTitle {{ font-size: 20pt; font-weight: 700; }}
+        QLabel#brandSubtitle, QLabel#muted {{ color: {c['muted']}; }}
+        QLabel#cardTitle {{ font-size: 13pt; font-weight: 700; }}
+        QLabel#sectionTitle {{ font-size: 10pt; font-weight: 700; }}
+        QLabel#valueBadge {{
+            background: {c['raised']}; border: 1px solid {c['border']}; border-radius: 8px;
+            color: {c['text']}; font-weight: 600; padding: 3px 8px;
+        }}
+        QLabel#statusBadge {{
+            background: {c['raised']}; border: 1px solid {c['border']}; border-radius: 10px;
+            padding: 5px 10px; font-weight: 600;
+        }}
+        QLabel#statusBadge[state="ready"] {{ color: {c['success']}; }}
+        QLabel#statusBadge[state="warning"] {{ color: {c['warning']}; }}
+        QLabel#statusBadge[state="error"] {{ color: {c['danger']}; }}
+        QScrollArea {{ background: transparent; border: none; }}
+        QScrollArea > QWidget > QWidget {{ background: transparent; }}
+        QComboBox, QLineEdit {{
+            min-height: 34px; background: {c['field']}; border: 1px solid {c['border']};
+            border-radius: 8px; padding: 0 11px; selection-background-color: {c['selection']};
+        }}
+        QComboBox:hover, QLineEdit:hover {{ border-color: {c['accent']}; }}
+        QComboBox:focus, QLineEdit:focus {{ border: 1px solid {c['accent']}; }}
+        QComboBox:disabled, QLineEdit:disabled {{ color: {c['muted']}; background: {c['panel']}; }}
+        QComboBox::drop-down {{ border: none; width: 28px; }}
+        QComboBox QAbstractItemView {{
+            background: {c['card']}; border: 1px solid {c['border']}; border-radius: 8px;
+            selection-background-color: {c['selection']}; outline: 0; padding: 4px;
+        }}
+        QPushButton, QToolButton {{
+            min-height: 34px; background: {c['raised']}; border: 1px solid {c['border']};
+            border-radius: 8px; padding: 0 13px; font-weight: 600;
+        }}
+        QPushButton:hover, QToolButton:hover {{ background: {c['hover']}; border-color: {c['accent']}; }}
+        QPushButton:pressed, QToolButton:pressed {{ background: {c['selection']}; }}
+        QPushButton:disabled, QToolButton:disabled {{
+            color: {c['muted']}; background: {c['panel']}; border-color: {c['border']};
+        }}
+        QPushButton#primaryButton {{
+            min-height: 40px; background: {c['accent']}; border-color: {c['accent']}; color: white;
+        }}
+        QPushButton#primaryButton:hover {{ background: {c['accent_hover']}; border-color: {c['accent_hover']}; }}
+        QPushButton#warningButton {{ color: {c['warning']}; }}
+        QPushButton#dangerButton {{ color: {c['danger']}; }}
+        QPushButton[compact="true"] {{ min-height: 30px; padding: 0 10px; }}
+        QPushButton[segment="true"] {{
+            min-height: 30px; background: {c['field']}; border: 1px solid {c['border']};
+            border-radius: 7px; padding: 0 7px;
+        }}
+        QPushButton[segment="true"]:checked {{
+            background: {c['accent']}; border-color: {c['accent']}; color: white;
+        }}
+        QPushButton#dropZone {{
+            min-height: 82px; background: {c['panel']}; border: 2px dashed {c['border']};
+            border-radius: 13px; color: {c['muted']}; font-size: 11pt;
+        }}
+        QPushButton#dropZone:hover, QPushButton#dropZone[dragActive="true"] {{
+            background: {c['raised']}; border-color: {c['accent']}; color: {c['text']};
+        }}
+        QTreeWidget {{
+            background: {c['field']}; alternate-background-color: {c['panel']};
+            border: 1px solid {c['border']}; border-radius: 9px; outline: 0; padding: 3px;
+            selection-background-color: {c['selection']};
+        }}
+        QTreeWidget::item {{ min-height: 36px; border: none; padding: 2px 5px; }}
+        QTreeWidget::item:hover {{ background: {c['hover']}; }}
+        QHeaderView::section {{
+            background: {c['raised']}; color: {c['muted']}; border: none;
+            border-bottom: 1px solid {c['border']}; padding: 8px 7px; font-weight: 600;
+        }}
+        QProgressBar {{
+            min-height: 7px; max-height: 7px; background: {c['track']}; border: none;
+            border-radius: 3px;
+        }}
+        QProgressBar::chunk {{ background: {c['accent']}; border-radius: 3px; }}
+        QProgressBar#overallProgress::chunk {{ background: #836ef9; }}
+        QSlider::groove:horizontal {{ height: 5px; background: {c['track']}; border-radius: 2px; }}
+        QSlider::sub-page:horizontal {{ background: {c['accent']}; border-radius: 2px; }}
+        QSlider::handle:horizontal {{
+            width: 17px; margin: -6px 0; border-radius: 8px; background: {c['accent']};
+            border: 2px solid {c['card']};
+        }}
+        QCheckBox {{ spacing: 9px; min-height: 26px; }}
+        QCheckBox::indicator {{
+            width: 17px; height: 17px; border: 1px solid {c['border']}; border-radius: 5px;
+            background: {c['field']};
+        }}
+        QCheckBox::indicator:checked {{ background: {c['accent']}; border-color: {c['accent']}; }}
+        QPlainTextEdit {{
+            background: {c['field']}; border: 1px solid {c['border']}; border-radius: 9px;
+            padding: 8px; selection-background-color: {c['selection']};
+        }}
+        QMenu {{ background: {c['card']}; border: 1px solid {c['border']}; padding: 5px; }}
+        QMenu::item {{ padding: 7px 24px 7px 10px; border-radius: 6px; }}
+        QMenu::item:selected {{ background: {c['selection']}; }}
+        QMenu::separator {{ height: 1px; background: {c['border']}; margin: 5px 8px; }}
+        QToolTip {{
+            background: {c['raised']}; color: {c['text']}; border: 1px solid {c['border']}; padding: 5px;
+        }}
+        QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
+        QScrollBar::handle:vertical {{
+            background: {c['border']}; min-height: 28px; border-radius: 4px;
+        }}
+        QScrollBar::handle:vertical:hover {{ background: {c['muted']}; }}
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+    """
+
+
+def repolish(widget: QWidget) -> None:
+    widget.style().unpolish(widget)
+    widget.style().polish(widget)
+    widget.update()
+
+
+def make_card(parent: QWidget | None = None, shadow: bool = True) -> QFrame:
+    frame = QFrame(parent)
+    frame.setObjectName("card")
+    if shadow:
+        effect = QGraphicsDropShadowEffect(frame)
+        effect.setBlurRadius(22)
+        effect.setOffset(0, 5)
+        effect.setColor(QColor(0, 0, 0, 80))
+        frame.setGraphicsEffect(effect)
+    return frame
+
+
+class SmoothProgressBar(QProgressBar):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setRange(0, 1000)
+        self.setTextVisible(False)
+        self.animation = QPropertyAnimation(self, b"value", self)
+        self.animation.setDuration(180)
+        self.animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def set_fraction(self, fraction: float, animate: bool = True) -> None:
+        target = round(min(1.0, max(0.0, fraction)) * 1000)
+        self.animation.stop()
+        if not animate:
+            self.setValue(target)
+            return
+        self.animation.setStartValue(self.value())
+        self.animation.setEndValue(target)
+        self.animation.start()
+
+
+class SegmentedControl(QWidget):
+    value_changed = Signal(str)
+
+    def __init__(self, values: list[str], value: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._buttons: dict[str, QPushButton] = {}
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
+        for label in values:
+            button = QPushButton(label, self)
+            button.setCheckable(True)
+            button.setProperty("segment", True)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(lambda _checked=False, text=label: self.value_changed.emit(text))
+            self._group.addButton(button)
+            self._buttons[label] = button
+            layout.addWidget(button, 1)
+        self.set_value(value)
+
+    def value(self) -> str:
+        checked = self._group.checkedButton()
+        return checked.text() if checked else next(iter(self._buttons))
+
+    def set_value(self, value: str) -> None:
+        if value in self._buttons:
+            self._buttons[value].setChecked(True)
+
+
+class DropZone(QPushButton):
+    files_dropped = Signal(list)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__("＋  Drop video files here\n     or click to browse", parent)
+        self.setObjectName("dropZone")
+        self.setAcceptDrops(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setProperty("dragActive", False)
+
+    @staticmethod
+    def local_paths(mime: QMimeData) -> list[Path]:
+        return [Path(url.toLocalFile()) for url in mime.urls() if url.isLocalFile()]
+
+    def dragEnterEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if self.isEnabled() and self.local_paths(event.mimeData()):
+            event.acceptProposedAction()
+            self.setProperty("dragActive", True)
+            repolish(self)
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if self.isEnabled() and self.local_paths(event.mimeData()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        self.setProperty("dragActive", False)
+        repolish(self)
+        event.accept()
+
+    def dropEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        paths = self.local_paths(event.mimeData())
+        self.setProperty("dragActive", False)
+        repolish(self)
+        if paths and self.isEnabled():
+            self.files_dropped.emit(paths)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+
+class FRUCApp(QMainWindow):
+    def __init__(self, start_background_tasks: bool = True) -> None:
+        super().__init__()
+        self.settings = load_settings()
+        self.appearance = self.settings.appearance
         self.logger = setup_logging()
         self.events: queue.Queue[dict[str, object]] = queue.Queue()
         self.ffmpeg = find_binary("ffmpeg")
         self.ffprobe = find_binary("ffprobe")
         self.capabilities: Capabilities | None = None
         self.jobs: dict[str, RenderJob] = {}
+        self.job_items: dict[str, QTreeWidgetItem] = {}
         self.active_job_ids: list[str] = []
-        self.log_lines: deque[str] = deque(maxlen=4000)
         self.current_job_id: str | None = None
         self.renderer = Renderer(self.ffmpeg, self.ffprobe, self.events) if self.ffmpeg and self.ffprobe else None
-        self.setting_controls: list[ctk.CTkBaseClass] = []
         self._closing = False
-
-        self._make_variables()
-        self._configure_tree_style()
-        self._build_ui()
-        self._configure_drop()
-        self._sync_output_controls()
-        self._toggle_advanced(force=self.settings.advanced_open)
-        self._append_log("INFO", "Application started")
-        self.after(100, self._poll_events)
-        self.after(150, self._start_capability_check)
-
-    def _make_variables(self) -> None:
-        s = self.settings
-        self.preset_var = ctk.StringVar(value="Custom")
-        self.multiplier_var = ctk.StringVar(value=f"{s.multiplier}×")
-        self.performance_var = ctk.StringVar(value=s.performance.title())
-        self.grid_var = ctk.StringVar(value=str(s.grid))
-        self.mixer_var = ctk.StringVar(value=MIXER_LABELS.get(s.frame_mixer, MIXER_LABELS["linear"]))
-        self.blur_var = ctk.DoubleVar(value=s.blur_amount)
-        self.codec_var = ctk.StringVar(value=CODEC_LABELS.get(s.video_codec, CODEC_LABELS["h264"]))
-        self.qp_var = ctk.IntVar(value=s.qp)
-        self.parallel_var = ctk.StringVar(value=str(s.parallel_jobs))
-        self.auto_mp4_var = ctk.BooleanVar(value=s.auto_mp4)
-        self.keep_ts_var = ctk.BooleanVar(value=s.keep_ts)
-        self.same_output_var = ctk.BooleanVar(value=s.output_same_as_source)
-        self.output_dir_var = ctk.StringVar(value=s.output_directory)
-        self.appearance_var = ctk.StringVar(value=s.appearance)
-        self.device_var = ctk.StringVar(value=str(s.device_index))
-        self.capability_var = ctk.StringVar(value="Checking FFmpeg capabilities…")
-        self.selection_var = ctk.StringVar(value="No file selected")
-        self.stage_var = ctk.StringVar(value="Idle")
-        self.progress_var = ctk.StringVar(value="0%  •  0.00×  •  ETA --:--:--")
-        self.overall_var = ctk.StringVar(value="Queue 0%")
-        self.diagnostics_var = ctk.StringVar(value="Capabilities are being checked…")
+        self._force_close = False
+        self._close_deadline = 0.0
+        self._applying_preset = False
         self.advanced_visible = False
-
-    def _configure_tree_style(self) -> None:
-        style = ttk.Style(self)
-        style.theme_use("clam")
-        style.configure(
-            "Queue.Treeview", background="#17191d", foreground="#e8e8e8",
-            fieldbackground="#17191d", borderwidth=0, rowheight=36,
-            font=("Segoe UI", 10),
-        )
-        style.configure(
-            "Queue.Treeview.Heading", background="#24272d", foreground="#b9bec8",
-            borderwidth=0, font=("Segoe UI Semibold", 10), relief="flat",
-        )
-        style.map("Queue.Treeview", background=[("selected", "#255b8e")])
-
-    def _build_ui(self) -> None:
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
-
-        header = ctk.CTkFrame(self, corner_radius=0, height=66)
-        header.grid(row=0, column=0, sticky="ew")
-        header.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(header, text="FRUC Motion Blur", font=ctk.CTkFont(size=23, weight="bold")).grid(
-            row=0, column=0, padx=(22, 8), pady=18
-        )
-        ctk.CTkLabel(header, text="Vulkan FRUC + temporal mixing", text_color="#8f98a6").grid(
-            row=0, column=1, sticky="w"
-        )
-        self.capability_label = ctk.CTkLabel(header, textvariable=self.capability_var, text_color="#e7b75f")
-        self.capability_label.grid(row=0, column=2, padx=12)
-        ctk.CTkComboBox(
-            header, values=["Dark", "Light", "System"], variable=self.appearance_var,
-            command=self._change_appearance, width=105,
-        ).grid(row=0, column=3, padx=(0, 22))
-
-        body = ctk.CTkFrame(self, fg_color="transparent")
-        body.grid(row=1, column=0, sticky="nsew", padx=16, pady=(14, 16))
-        body.grid_columnconfigure(0, weight=1)
-        body.grid_rowconfigure(0, weight=1)
-
-        left = ctk.CTkFrame(body, fg_color="transparent")
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
-        left.grid_columnconfigure(0, weight=1)
-        left.grid_rowconfigure(2, weight=1)
-
-        self.drop_zone = ctk.CTkButton(
-            left, text="Drop video files here\n—or click to browse—",
-            command=self._pick_files, height=76, fg_color="transparent",
-            border_width=2, border_color="#376d9e", hover_color=("#e8f2fa", "#202b35"),
-            font=ctk.CTkFont(size=15, weight="bold"),
-        )
-        self.drop_zone.grid(row=0, column=0, sticky="ew")
-        ctk.CTkLabel(left, textvariable=self.selection_var, anchor="w", text_color="#9da5b1").grid(
-            row=1, column=0, sticky="ew", pady=(7, 7)
-        )
-
-        queue_card = ctk.CTkFrame(left)
-        queue_card.grid(row=2, column=0, sticky="nsew")
-        queue_card.grid_columnconfigure(0, weight=1)
-        queue_card.grid_rowconfigure(1, weight=1)
-        queue_header = ctk.CTkFrame(queue_card, fg_color="transparent")
-        queue_header.grid(row=0, column=0, sticky="ew", padx=12, pady=(9, 5))
-        queue_header.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(queue_header, text="Queue", font=ctk.CTkFont(size=16, weight="bold")).grid(row=0, column=0, sticky="w")
-        self.add_button = ctk.CTkButton(queue_header, text="Add files", width=86, command=self._pick_files)
-        self.add_button.grid(row=0, column=1, padx=4)
-        self.remove_button = ctk.CTkButton(queue_header, text="Remove", width=78, fg_color="#4a4e57", command=self._remove_selected)
-        self.remove_button.grid(row=0, column=2, padx=4)
-        self.clear_button = ctk.CTkButton(queue_header, text="Clear completed", width=118, fg_color="#4a4e57", command=self._clear_completed)
-        self.clear_button.grid(row=0, column=3, padx=4)
-
-        self.tree = ttk.Treeview(
-            queue_card, style="Queue.Treeview", columns=("media", "samples", "status"),
-            show="tree headings", selectmode="browse",
-        )
-        self.tree.heading("#0", text="File")
-        self.tree.heading("media", text="Resolution / FPS / Duration")
-        self.tree.heading("samples", text="Samples")
-        self.tree.heading("status", text="Status")
-        self.tree.column("#0", width=260, minwidth=150)
-        self.tree.column("media", width=245, minwidth=180)
-        self.tree.column("samples", width=68, minwidth=58, anchor="center")
-        self.tree.column("status", width=130, minwidth=100, anchor="center")
-        self.tree.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 10))
-        self.tree.tag_configure("done", foreground="#65d79a")
-        self.tree.tag_configure("failed", foreground="#ff7272")
-        self.tree.tag_configure("active", foreground="#6eb8ff")
-        self.tree.tag_configure("cancelled", foreground="#d5a960")
-        self.tree.bind("<<TreeviewSelect>>", self._on_select)
-        self.tree.bind("<Double-1>", self._open_selected_folder)
-        self.tree.bind("<Button-3>", self._show_context_menu)
-
-        progress_card = ctk.CTkFrame(left)
-        progress_card.grid(row=3, column=0, sticky="ew", pady=(12, 0))
-        progress_card.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(progress_card, textvariable=self.stage_var, anchor="w", font=ctk.CTkFont(weight="bold")).grid(
-            row=0, column=0, sticky="ew", padx=14, pady=(11, 3)
-        )
-        self.current_progress = ctk.CTkProgressBar(progress_card)
-        self.current_progress.set(0)
-        self.current_progress.grid(row=1, column=0, sticky="ew", padx=14)
-        ctk.CTkLabel(progress_card, textvariable=self.progress_var, anchor="w", text_color="#9da5b1").grid(
-            row=2, column=0, sticky="ew", padx=14
-        )
-        self.overall_progress = ctk.CTkProgressBar(progress_card, progress_color="#6c7ee1")
-        self.overall_progress.set(0)
-        self.overall_progress.grid(row=3, column=0, sticky="ew", padx=14, pady=(5, 0))
-        ctk.CTkLabel(progress_card, textvariable=self.overall_var, anchor="w", text_color="#9da5b1").grid(
-            row=4, column=0, sticky="ew", padx=14, pady=(0, 7)
-        )
-        controls = ctk.CTkFrame(progress_card, fg_color="transparent")
-        controls.grid(row=5, column=0, sticky="ew", padx=10, pady=(0, 11))
-        controls.grid_columnconfigure(0, weight=1)
-        self.start_button = ctk.CTkButton(controls, text="Start Queue", height=38, command=self._start_queue)
-        self.start_button.grid(row=0, column=0, sticky="ew", padx=4)
-        self.cancel_button = ctk.CTkButton(controls, text="Cancel Active", width=116, state="disabled", fg_color="#905d2d", command=self._cancel_current)
-        self.cancel_button.grid(row=0, column=1, padx=4)
-        self.stop_button = ctk.CTkButton(controls, text="Stop Queue", width=100, state="disabled", fg_color="#8d3d47", command=self._stop_queue)
-        self.stop_button.grid(row=0, column=2, padx=4)
-        self.open_button = ctk.CTkButton(controls, text="Open Output", width=104, state="disabled", fg_color="#4a4e57", command=self._open_selected_folder)
-        self.open_button.grid(row=0, column=3, padx=4)
-
-        self.log_toggle = ctk.CTkButton(left, text="Show render log ▾", height=29, fg_color="transparent", command=self._toggle_log)
-        self.log_toggle.grid(row=4, column=0, sticky="ew", pady=(8, 0))
-        self.log_box = ctk.CTkTextbox(left, height=150, font=("Consolas", 10), wrap="none")
-        self.log_box.configure(state="disabled")
         self.log_visible = False
 
-        self._build_settings(body)
+        self.setWindowTitle("FRUC Motion Blur")
+        self.setWindowIcon(app_icon())
+        self.resize(1280, 820)
+        self.setMinimumSize(1060, 700)
+        self._build_ui()
+        self._apply_theme()
+        self._toggle_advanced(self.settings.advanced_open)
+        self._sync_output_controls()
+        self._append_log("INFO", "Application started")
 
-    def _build_settings(self, body: ctk.CTkFrame) -> None:
-        panel = ctk.CTkScrollableFrame(body, width=345, label_text="Render settings")
-        panel.grid(row=0, column=1, sticky="nsew")
-        panel.grid_columnconfigure(0, weight=1)
-        row = 0
+        self.event_timer = QTimer(self)
+        self.event_timer.setInterval(100)
+        self.event_timer.timeout.connect(self._poll_events)
+        self.event_timer.start()
+        if start_background_tasks:
+            QTimer.singleShot(150, self._start_capability_check)
 
-        def title(text: str) -> None:
-            nonlocal row
-            ctk.CTkLabel(panel, text=text, anchor="w", font=ctk.CTkFont(size=14, weight="bold")).grid(
-                row=row, column=0, sticky="ew", padx=8, pady=(14, 5)
-            )
-            row += 1
+        self.setWindowOpacity(0.0)
+        self.fade_animation = QPropertyAnimation(self, b"windowOpacity", self)
+        self.fade_animation.setDuration(240)
+        self.fade_animation.setStartValue(0.0)
+        self.fade_animation.setEndValue(1.0)
+        self.fade_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        QTimer.singleShot(0, self.fade_animation.start)
 
-        title("Preset")
-        preset = ctk.CTkComboBox(panel, values=list(PRESETS), variable=self.preset_var, command=self._apply_preset)
-        preset.grid(row=row, column=0, sticky="ew", padx=8)
-        self.setting_controls.append(preset)
-        row += 1
+    def _build_ui(self) -> None:
+        root = QWidget(self)
+        root.setObjectName("root")
+        self.setCentralWidget(root)
+        page = QVBoxLayout(root)
+        page.setContentsMargins(0, 0, 0, 0)
+        page.setSpacing(0)
 
-        title("Temporal sampling")
-        multiplier = ctk.CTkSegmentedButton(
-            panel, values=["2×", "3×", "4×", "6×", "8×", "12×", "16×"], variable=self.multiplier_var,
-            command=lambda _: self._settings_changed(),
-        )
-        multiplier.grid(row=row, column=0, sticky="ew", padx=8)
-        self.setting_controls.append(multiplier)
-        row += 1
+        header = QFrame(root)
+        header.setObjectName("appHeader")
+        header.setFixedHeight(76)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(22, 12, 22, 12)
+        header_layout.setSpacing(12)
+        icon_label = QLabel(header)
+        icon_label.setPixmap(app_icon().pixmap(38, 38))
+        header_layout.addWidget(icon_label)
+        brand = QVBoxLayout()
+        brand.setSpacing(0)
+        title = QLabel("FRUC Motion Blur", header)
+        title.setObjectName("brandTitle")
+        subtitle = QLabel("Vulkan optical flow  •  temporal motion mixing", header)
+        subtitle.setObjectName("brandSubtitle")
+        brand.addWidget(title)
+        brand.addWidget(subtitle)
+        header_layout.addLayout(brand)
+        header_layout.addStretch(1)
+        self.capability_label = QLabel("●  Checking Vulkan", header)
+        self.capability_label.setObjectName("statusBadge")
+        self.capability_label.setProperty("state", "warning")
+        header_layout.addWidget(self.capability_label)
 
-        title("FRUC optical flow")
-        flow = ctk.CTkFrame(panel, fg_color="transparent")
-        flow.grid(row=row, column=0, sticky="ew", padx=8)
-        flow.grid_columnconfigure((0, 1), weight=1)
-        ctk.CTkLabel(flow, text="Performance", text_color="#8f98a6").grid(row=0, column=0, sticky="w")
-        ctk.CTkLabel(flow, text="Flow grid", text_color="#8f98a6").grid(row=0, column=1, sticky="w", padx=(4, 0))
-        performance = ctk.CTkComboBox(
-            flow, values=["Fast", "Medium", "Slow"], variable=self.performance_var,
-            command=lambda _: self._settings_changed(),
-        )
-        performance.grid(row=1, column=0, sticky="ew", padx=(0, 4))
-        grid = ctk.CTkComboBox(
-            flow, values=["1", "2", "4"], variable=self.grid_var,
-            command=lambda _: self._settings_changed(),
-        )
-        grid.grid(row=1, column=1, sticky="ew", padx=(4, 0))
-        self.setting_controls += [performance, grid]
-        row += 1
-        ctk.CTkLabel(
-            panel,
-            text="Fast = quickest; Slow = best matching\nGrid 1 = finest detail; 4 = faster/coarser",
-            justify="left", text_color="#8f98a6", anchor="w",
-        ).grid(
-            row=row, column=0, sticky="ew", padx=8
-        )
-        row += 1
+        self.appearance_button = QToolButton(header)
+        self.appearance_button.setObjectName("themeButton")
+        self.appearance_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.appearance_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.appearance_button.setMinimumWidth(112)
+        theme_menu = QMenu(self.appearance_button)
+        self.theme_actions: dict[str, QAction] = {}
+        group = QActionGroup(theme_menu)
+        group.setExclusive(True)
+        for mode, label in (("Dark", "☾  Dark"), ("Light", "☀  Light"), ("System", "◐  System")):
+            action = QAction(label, theme_menu)
+            action.setCheckable(True)
+            action.triggered.connect(lambda _checked=False, value=mode: self._change_appearance(value))
+            group.addAction(action)
+            theme_menu.addAction(action)
+            self.theme_actions[mode] = action
+        self.appearance_button.setMenu(theme_menu)
+        header_layout.addWidget(self.appearance_button)
+        page.addWidget(header)
 
-        title("Motion mixer")
-        self.mixer_combo = ctk.CTkComboBox(
-            panel, values=[self.mixer_var.get()], variable=self.mixer_var,
-            command=lambda _: self._settings_changed(),
-        )
-        self.mixer_combo.grid(row=row, column=0, sticky="ew", padx=8)
-        self.setting_controls.append(self.mixer_combo)
-        row += 1
-        ctk.CTkLabel(
-            panel, text="Detected libplacebo temporal mixers only.", text_color="#8f98a6", anchor="w"
-        ).grid(row=row, column=0, sticky="ew", padx=8)
-        row += 1
+        body = QHBoxLayout()
+        body.setContentsMargins(20, 16, 20, 20)
+        body.setSpacing(16)
+        page.addLayout(body, 1)
+        left = QWidget(root)
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
+        body.addWidget(left, 1)
 
-        title("Blur amount")
-        blur_frame = ctk.CTkFrame(panel, fg_color="transparent")
-        blur_frame.grid(row=row, column=0, sticky="ew", padx=8)
-        blur_frame.grid_columnconfigure(0, weight=1)
-        self.blur_label = ctk.CTkLabel(blur_frame, text=f"{self.blur_var.get() * 100:.0f}%")
-        self.blur_label.grid(row=0, column=1, padx=(8, 0))
-        blur_slider = ctk.CTkSlider(
-            blur_frame, from_=0.25, to=2.0, number_of_steps=35,
-            variable=self.blur_var, command=self._blur_changed,
-        )
-        blur_slider.grid(row=0, column=0, sticky="ew")
-        self.setting_controls.append(blur_slider)
-        row += 1
-        ctk.CTkLabel(
-            panel, text="100% = original look • lower = shorter • higher = longer",
-            text_color="#8f98a6", anchor="w",
-        ).grid(row=row, column=0, sticky="ew", padx=8)
-        row += 1
+        self.drop_zone = DropZone(left)
+        self.drop_zone.clicked.connect(self._pick_files)
+        self.drop_zone.files_dropped.connect(self._add_paths)
+        left_layout.addWidget(self.drop_zone)
+        self.selection_label = QLabel("No file selected", left)
+        self.selection_label.setObjectName("muted")
+        self.selection_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        left_layout.addWidget(self.selection_label)
 
-        title("Video codec / quality")
-        self.codec_combo = ctk.CTkComboBox(
-            panel, values=[self.codec_var.get()], variable=self.codec_var,
-            command=lambda _: self._settings_changed(),
-        )
-        self.codec_combo.grid(row=row, column=0, sticky="ew", padx=8)
-        self.setting_controls.append(self.codec_combo)
-        row += 1
-        ctk.CTkLabel(
-            panel, text="Same QP control • H.264 is safest for video editors",
-            text_color="#8f98a6", anchor="w",
-        ).grid(row=row, column=0, sticky="ew", padx=8)
-        row += 1
-        quality = ctk.CTkFrame(panel, fg_color="transparent")
-        quality.grid(row=row, column=0, sticky="ew", padx=8)
-        quality.grid_columnconfigure(0, weight=1)
-        self.qp_label = ctk.CTkLabel(quality, text=f"QP {self.qp_var.get()}")
-        self.qp_label.grid(row=0, column=1, padx=(8, 0))
-        qp = ctk.CTkSlider(quality, from_=18, to=40, number_of_steps=22, variable=self.qp_var, command=self._qp_changed)
-        qp.grid(row=0, column=0, sticky="ew")
-        self.setting_controls.append(qp)
-        row += 1
+        queue_card = make_card(left)
+        queue_layout = QVBoxLayout(queue_card)
+        queue_layout.setContentsMargins(12, 11, 12, 12)
+        queue_layout.setSpacing(8)
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(6)
+        queue_title = QLabel("Render queue", queue_card)
+        queue_title.setObjectName("cardTitle")
+        toolbar.addWidget(queue_title)
+        toolbar.addStretch(1)
+        self.rerender_button = self._button("Render again", self._rerender_selected, QStyle.StandardPixmap.SP_BrowserReload, compact=True)
+        self.rerender_button.setToolTip("Render the selected finished file again with the current settings")
+        self.rerender_button.setEnabled(False)
+        self.add_button = self._button("Add files", self._pick_files, QStyle.StandardPixmap.SP_DialogOpenButton, compact=True)
+        self.remove_button = self._button("Remove", self._remove_selected, QStyle.StandardPixmap.SP_TrashIcon, compact=True)
+        self.clear_button = self._button("Clear finished", self._clear_completed, compact=True)
+        for button in (self.rerender_button, self.add_button, self.remove_button, self.clear_button):
+            toolbar.addWidget(button)
+        queue_layout.addLayout(toolbar)
 
-        title("Parallel renders")
-        parallel = ctk.CTkSegmentedButton(
-            panel, values=["1", "2", "3", "4"], variable=self.parallel_var,
-            command=lambda _: self._settings_changed(),
-        )
-        parallel.grid(row=row, column=0, sticky="ew", padx=8)
-        self.setting_controls.append(parallel)
-        row += 1
-        ctk.CTkLabel(
-            panel, text="1 = safest • higher values share GPU, VRAM, and disk",
-            text_color="#8f98a6", anchor="w",
-        ).grid(row=row, column=0, sticky="ew", padx=8)
-        row += 1
+        self.tree = QTreeWidget(queue_card)
+        self.tree.setColumnCount(4)
+        self.tree.setHeaderLabels(["File", "Resolution / FPS / Duration", "Samples", "Status"])
+        self.tree.setRootIsDecorated(False)
+        self.tree.setUniformRowHeights(True)
+        self.tree.setAlternatingRowColors(True)
+        self.tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.tree.header().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.tree.header().setStretchLastSection(False)
+        self.tree.itemSelectionChanged.connect(self._on_select)
+        self.tree.itemDoubleClicked.connect(lambda *_: self._open_selected_folder())
+        self.tree.customContextMenuRequested.connect(self._show_context_menu)
+        queue_layout.addWidget(self.tree, 1)
+        left_layout.addWidget(queue_card, 1)
 
-        title("Output")
-        same = ctk.CTkSwitch(panel, text="Save beside source", variable=self.same_output_var, command=self._output_mode_changed)
-        same.grid(row=row, column=0, sticky="w", padx=8)
-        self.setting_controls.append(same)
-        row += 1
-        out = ctk.CTkFrame(panel, fg_color="transparent")
-        out.grid(row=row, column=0, sticky="ew", padx=8, pady=5)
-        out.grid_columnconfigure(0, weight=1)
-        self.output_entry = ctk.CTkEntry(out, textvariable=self.output_dir_var, placeholder_text="Custom output folder")
-        self.output_entry.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        self.output_browse = ctk.CTkButton(out, text="…", width=34, command=self._pick_output_directory)
-        self.output_browse.grid(row=0, column=1)
-        self.setting_controls += [self.output_entry, self.output_browse]
-        row += 1
-        auto = ctk.CTkCheckBox(panel, text="Automatic MP4 remux", variable=self.auto_mp4_var, command=self._settings_changed)
-        auto.grid(row=row, column=0, sticky="w", padx=8, pady=3)
-        self.setting_controls.append(auto)
-        row += 1
-        keep = ctk.CTkCheckBox(
-            panel, text="Keep intermediate (TS/MKV)", variable=self.keep_ts_var,
-            command=self._settings_changed,
-        )
-        keep.grid(row=row, column=0, sticky="w", padx=8, pady=3)
-        self.setting_controls.append(keep)
-        row += 1
+        progress_card = make_card(left)
+        progress_layout = QVBoxLayout(progress_card)
+        progress_layout.setContentsMargins(14, 12, 14, 13)
+        progress_layout.setSpacing(7)
+        self.stage_label = QLabel("Idle", progress_card)
+        self.stage_label.setObjectName("sectionTitle")
+        progress_layout.addWidget(self.stage_label)
+        self.current_progress = SmoothProgressBar(progress_card)
+        progress_layout.addWidget(self.current_progress)
+        self.progress_label = QLabel("0%  •  0.00×  •  ETA --:--:--", progress_card)
+        self.progress_label.setObjectName("muted")
+        progress_layout.addWidget(self.progress_label)
+        self.overall_progress = SmoothProgressBar(progress_card)
+        self.overall_progress.setObjectName("overallProgress")
+        progress_layout.addWidget(self.overall_progress)
+        self.overall_label = QLabel("Queue 0%", progress_card)
+        self.overall_label.setObjectName("muted")
+        progress_layout.addWidget(self.overall_label)
+        controls = QHBoxLayout()
+        controls.setSpacing(8)
+        self.start_button = self._button("Start queue", self._start_queue, QStyle.StandardPixmap.SP_MediaPlay, "primaryButton")
+        self.start_button.setEnabled(False)
+        self.cancel_button = self._button("Cancel active", self._cancel_current, QStyle.StandardPixmap.SP_DialogCancelButton, "warningButton")
+        self.cancel_button.setEnabled(False)
+        self.stop_button = self._button("Stop queue", self._stop_queue, QStyle.StandardPixmap.SP_MediaStop, "dangerButton")
+        self.stop_button.setEnabled(False)
+        self.open_button = self._button("Open output", self._open_selected_folder, QStyle.StandardPixmap.SP_DirOpenIcon)
+        self.open_button.setEnabled(False)
+        controls.addWidget(self.start_button, 1)
+        controls.addWidget(self.cancel_button)
+        controls.addWidget(self.stop_button)
+        controls.addWidget(self.open_button)
+        progress_layout.addLayout(controls)
+        left_layout.addWidget(progress_card)
 
-        self.advanced_button = ctk.CTkButton(panel, text="Advanced ▾", fg_color="#454a54", command=self._toggle_advanced)
-        self.advanced_button.grid(row=row, column=0, sticky="ew", padx=8, pady=(16, 5))
-        self.setting_controls.append(self.advanced_button)
-        row += 1
-        self.advanced_frame = ctk.CTkFrame(panel)
-        self.advanced_frame.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(self.advanced_frame, text="Vulkan device index", anchor="w").grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 2))
-        device = ctk.CTkComboBox(
-            self.advanced_frame, values=[str(i) for i in range(8)], variable=self.device_var,
-            command=self._device_changed,
-        )
-        device.grid(row=1, column=0, sticky="ew", padx=8)
-        self.setting_controls.append(device)
-        ctk.CTkLabel(
-            self.advanced_frame, textvariable=self.diagnostics_var, justify="left", anchor="w",
-            wraplength=305, text_color="#aeb6c2",
-        ).grid(row=2, column=0, sticky="ew", padx=8, pady=8)
-        ctk.CTkButton(self.advanced_frame, text="Copy Command", command=self._copy_command).grid(
-            row=3, column=0, sticky="ew", padx=8, pady=(0, 5)
-        )
-        ctk.CTkButton(self.advanced_frame, text="FFmpeg help", fg_color="transparent", command=lambda: webbrowser.open("https://ffmpeg.org/ffmpeg-filters.html")).grid(
-            row=4, column=0, sticky="ew", padx=8, pady=(0, 8)
-        )
-        self.advanced_grid_row = row
+        self.log_toggle = QToolButton(left)
+        self.log_toggle.setText("Show render log  ▾")
+        self.log_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.log_toggle.clicked.connect(self._toggle_log)
+        left_layout.addWidget(self.log_toggle)
+        self.log_box = QPlainTextEdit(left)
+        self.log_box.setReadOnly(True)
+        self.log_box.setMaximumBlockCount(4000)
+        self.log_box.setFont(QFont("Cascadia Mono", 9))
+        self.log_box.setFixedHeight(145)
+        self.log_box.hide()
+        left_layout.addWidget(self.log_box)
+        self._build_settings(root, body)
 
-    def _configure_drop(self) -> None:
-        if not (TkinterDnD and DND_FILES and COPY and REFUSE_DROP):
-            self._append_log("WARNING", "Drag-and-drop unavailable; install tkinterdnd2")
-            self.drop_zone.configure(text="Click to add video files\n(install tkinterdnd2 for drag-and-drop)")
+    def _build_settings(self, parent: QWidget, body: QHBoxLayout) -> None:
+        scroll = QScrollArea(parent)
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setMinimumWidth(370)
+        scroll.setMaximumWidth(430)
+        self.settings_content = QFrame(scroll)
+        self.settings_content.setObjectName("settingsCard")
+        panel = QVBoxLayout(self.settings_content)
+        panel.setContentsMargins(17, 15, 17, 18)
+        panel.setSpacing(7)
+        scroll.setWidget(self.settings_content)
+        body.addWidget(scroll)
+        heading = QHBoxLayout()
+        settings_title = QLabel("Render settings", self.settings_content)
+        settings_title.setObjectName("cardTitle")
+        heading.addWidget(settings_title)
+        heading.addStretch(1)
+        badge = QLabel("GPU pipeline", self.settings_content)
+        badge.setObjectName("valueBadge")
+        heading.addWidget(badge)
+        panel.addLayout(heading)
+
+        self._section(panel, "Preset")
+        self.preset_combo = QComboBox(self.settings_content)
+        self.preset_combo.addItems(["Custom", *PRESETS])
+        self.preset_combo.setCurrentText("Custom")
+        self.preset_combo.textActivated.connect(self._apply_preset)
+        panel.addWidget(self.preset_combo)
+        self._section(panel, "Temporal sampling")
+        self.multiplier_control = SegmentedControl(["2×", "3×", "4×", "6×", "8×", "12×", "16×"], f"{self.settings.multiplier}×", self.settings_content)
+        self.multiplier_control.value_changed.connect(self._settings_changed)
+        panel.addWidget(self.multiplier_control)
+
+        self._section(panel, "FRUC optical flow")
+        flow = QGridLayout()
+        flow.setHorizontalSpacing(8)
+        performance_label = QLabel("Performance", self.settings_content)
+        performance_label.setObjectName("muted")
+        grid_label = QLabel("Flow grid", self.settings_content)
+        grid_label.setObjectName("muted")
+        flow.addWidget(performance_label, 0, 0)
+        flow.addWidget(grid_label, 0, 1)
+        self.performance_combo = QComboBox(self.settings_content)
+        self.performance_combo.addItems(["Fast", "Medium", "Slow"])
+        self.performance_combo.setCurrentText(self.settings.performance.title())
+        self.performance_combo.currentTextChanged.connect(self._settings_changed)
+        self.grid_combo = QComboBox(self.settings_content)
+        self.grid_combo.addItems(["1", "2", "4"])
+        self.grid_combo.setCurrentText(str(self.settings.grid))
+        self.grid_combo.currentTextChanged.connect(self._settings_changed)
+        flow.addWidget(self.performance_combo, 1, 0)
+        flow.addWidget(self.grid_combo, 1, 1)
+        panel.addLayout(flow)
+        self._hint(panel, "Fast = quickest; Slow = best matching\nGrid 1 = finest detail; 4 = faster/coarser")
+
+        self._section(panel, "Motion mixer")
+        self.mixer_combo = QComboBox(self.settings_content)
+        self.mixer_combo.addItem(MIXER_LABELS.get(self.settings.frame_mixer, MIXER_LABELS["linear"]))
+        self.mixer_combo.currentTextChanged.connect(self._settings_changed)
+        panel.addWidget(self.mixer_combo)
+        self._hint(panel, "Detected libplacebo temporal mixers only")
+        self._section(panel, "Blur amount")
+        blur_row = QHBoxLayout()
+        self.blur_slider = QSlider(Qt.Orientation.Horizontal, self.settings_content)
+        self.blur_slider.setRange(25, 200)
+        self.blur_slider.setSingleStep(5)
+        self.blur_slider.setValue(round(self.settings.blur_amount * 100))
+        self.blur_slider.valueChanged.connect(self._blur_changed)
+        self.blur_label = QLabel(f"{self.blur_slider.value()}%", self.settings_content)
+        self.blur_label.setObjectName("valueBadge")
+        blur_row.addWidget(self.blur_slider, 1)
+        blur_row.addWidget(self.blur_label)
+        panel.addLayout(blur_row)
+        self._hint(panel, "100% = original look  •  lower = shorter  •  higher = longer")
+
+        self._section(panel, "Video codec / quality")
+        self.codec_combo = QComboBox(self.settings_content)
+        self.codec_combo.addItem(CODEC_LABELS.get(self.settings.video_codec, CODEC_LABELS["h264"]))
+        self.codec_combo.currentTextChanged.connect(self._settings_changed)
+        panel.addWidget(self.codec_combo)
+        self._hint(panel, "Same QP control  •  H.264 is safest for video editors")
+        qp_row = QHBoxLayout()
+        self.qp_slider = QSlider(Qt.Orientation.Horizontal, self.settings_content)
+        self.qp_slider.setRange(18, 40)
+        self.qp_slider.setValue(self.settings.qp)
+        self.qp_slider.valueChanged.connect(self._qp_changed)
+        self.qp_label = QLabel(f"QP {self.settings.qp}", self.settings_content)
+        self.qp_label.setObjectName("valueBadge")
+        qp_row.addWidget(self.qp_slider, 1)
+        qp_row.addWidget(self.qp_label)
+        panel.addLayout(qp_row)
+        self._section(panel, "Parallel renders")
+        self.parallel_control = SegmentedControl(["1", "2", "3", "4"], str(self.settings.parallel_jobs), self.settings_content)
+        self.parallel_control.value_changed.connect(self._settings_changed)
+        panel.addWidget(self.parallel_control)
+        self._hint(panel, "1 = safest  •  higher values share GPU, VRAM, and disk")
+
+        self._section(panel, "Output")
+        self.same_output_check = QCheckBox("Save beside source", self.settings_content)
+        self.same_output_check.setChecked(self.settings.output_same_as_source)
+        self.same_output_check.toggled.connect(self._output_mode_changed)
+        panel.addWidget(self.same_output_check)
+        output_row = QHBoxLayout()
+        self.output_entry = QLineEdit(self.settings.output_directory, self.settings_content)
+        self.output_entry.setPlaceholderText("Custom output folder")
+        self.output_entry.textChanged.connect(self._settings_changed)
+        self.output_browse = self._button("", self._pick_output_directory, QStyle.StandardPixmap.SP_DirOpenIcon, compact=True)
+        self.output_browse.setFixedWidth(40)
+        output_row.addWidget(self.output_entry, 1)
+        output_row.addWidget(self.output_browse)
+        panel.addLayout(output_row)
+        self.auto_mp4_check = QCheckBox("Automatic MP4 remux", self.settings_content)
+        self.auto_mp4_check.setChecked(self.settings.auto_mp4)
+        self.auto_mp4_check.toggled.connect(self._settings_changed)
+        panel.addWidget(self.auto_mp4_check)
+        self.keep_ts_check = QCheckBox("Keep intermediate (TS/MKV)", self.settings_content)
+        self.keep_ts_check.setChecked(self.settings.keep_ts)
+        self.keep_ts_check.toggled.connect(self._settings_changed)
+        panel.addWidget(self.keep_ts_check)
+
+        self.advanced_button = QToolButton(self.settings_content)
+        self.advanced_button.setText("Advanced  ▾")
+        self.advanced_button.setCheckable(True)
+        self.advanced_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.advanced_button.toggled.connect(self._toggle_advanced)
+        panel.addWidget(self.advanced_button)
+        self.advanced_frame = QFrame(self.settings_content)
+        self.advanced_frame.setObjectName("advancedCard")
+        advanced = QVBoxLayout(self.advanced_frame)
+        advanced.setContentsMargins(11, 11, 11, 11)
+        advanced.setSpacing(7)
+        advanced.addWidget(QLabel("Vulkan device index", self.advanced_frame))
+        self.device_combo = QComboBox(self.advanced_frame)
+        self.device_combo.addItems([str(index) for index in range(8)])
+        self.device_combo.setCurrentText(str(self.settings.device_index))
+        self.device_combo.textActivated.connect(self._device_changed)
+        advanced.addWidget(self.device_combo)
+        self.diagnostics_box = QPlainTextEdit(self.advanced_frame)
+        self.diagnostics_box.setReadOnly(True)
+        self.diagnostics_box.setMaximumHeight(190)
+        self.diagnostics_box.setPlainText("Capabilities are being checked…")
+        advanced.addWidget(self.diagnostics_box)
+        advanced_actions = QHBoxLayout()
+        advanced_actions.addWidget(self._button("Copy command", self._copy_command, compact=True), 1)
+        advanced_actions.addWidget(self._button("FFmpeg help", lambda: webbrowser.open("https://ffmpeg.org/ffmpeg-filters.html"), compact=True), 1)
+        advanced.addLayout(advanced_actions)
+        panel.addWidget(self.advanced_frame)
+        panel.addStretch(1)
+
+    def _button(self, text: str, slot, standard_icon: QStyle.StandardPixmap | None = None, object_name: str = "", compact: bool = False) -> QPushButton:
+        button = QPushButton(text, self)
+        if object_name:
+            button.setObjectName(object_name)
+        if standard_icon is not None:
+            button.setIcon(self.style().standardIcon(standard_icon))
+            button.setIconSize(QSize(16, 16))
+        if compact:
+            button.setProperty("compact", True)
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.clicked.connect(slot)
+        return button
+
+    @staticmethod
+    def _section(layout: QVBoxLayout, text: str) -> None:
+        label = QLabel(text)
+        label.setObjectName("sectionTitle")
+        layout.addSpacing(8)
+        layout.addWidget(label)
+
+    @staticmethod
+    def _hint(layout: QVBoxLayout, text: str) -> None:
+        label = QLabel(text)
+        label.setObjectName("muted")
+        label.setWordWrap(True)
+        layout.addWidget(label)
+
+    def _apply_theme(self) -> None:
+        app = QApplication.instance()
+        if not app:
             return
-        try:
-            TkinterDnD._require(self)
-            widgets = list(self.winfo_children())
-            for widget in widgets:
-                widgets.extend(widget.winfo_children())
-                widget.drop_target_register(DND_FILES)
-                widget.dnd_bind("<<DropEnter>>", self._drop_action)
-                widget.dnd_bind("<<DropPosition>>", self._drop_action)
-                widget.dnd_bind("<<Drop>>", self._on_drop)
-        except Exception as exc:
-            self._append_log("WARNING", f"Drag-and-drop unavailable: {exc}")
+        if self.appearance == "System":
+            try:
+                dark = app.styleHints().colorScheme() == Qt.ColorScheme.Dark
+            except AttributeError:
+                dark = app.palette().color(QPalette.ColorRole.Window).lightness() < 128
+        else:
+            dark = self.appearance == "Dark"
+        self.colors = theme_colors(dark)
+        app.setStyleSheet(theme_stylesheet(self.colors))
+        labels = {"Dark": "☾  Dark", "Light": "☀  Light", "System": "◐  System"}
+        self.appearance_button.setText(labels[self.appearance])
+        self.theme_actions[self.appearance].setChecked(True)
+        repolish(self.capability_label)
+        for job in self.jobs.values():
+            self._update_row(job)
+
+    def _change_appearance(self, value: str) -> None:
+        self.appearance = value
+        self._apply_theme()
+        save_settings(self._collect_settings())
+
+    def _set_capability(self, text: str, state: str) -> None:
+        self.capability_label.setText(f"●  {text}")
+        self.capability_label.setProperty("state", state)
+        repolish(self.capability_label)
 
     def _start_capability_check(self) -> None:
         if not self.ffmpeg or not self.ffprobe:
             missing = "ffmpeg.exe" if not self.ffmpeg else "ffprobe.exe"
-            self.capability_var.set(f"Missing {missing}")
-            self.capability_label.configure(text_color="#ff7272")
-            self.start_button.configure(state="disabled")
+            self._set_capability(f"Missing {missing}", "error")
+            self.start_button.setEnabled(False)
             self._append_log("ERROR", f"{missing} not found in ffmpeg/bin or PATH")
             return
+        self._set_capability("Checking Vulkan", "warning")
+        self.start_button.setEnabled(False)
         self._append_log("INFO", f"FFmpeg: {self.ffmpeg}")
         self._append_log("INFO", f"FFprobe: {self.ffprobe}")
-        device = int(self.device_var.get())
+        device = int(self.device_combo.currentText())
 
         def check() -> None:
             try:
-                caps = detect_capabilities(self.ffmpeg, device)
-                self.events.put({"event": "capabilities", "capabilities": caps})
+                capabilities = detect_capabilities(self.ffmpeg, device)
+                self.events.put({"event": "capabilities", "capabilities": capabilities})
             except Exception as exc:
                 self.events.put({"event": "capability_error", "error": str(exc)})
 
         threading.Thread(target=check, daemon=True).start()
 
     def _pick_files(self) -> None:
-        selected = filedialog.askopenfilenames(
-            title="Add video files",
-            filetypes=[("Video files", " ".join(f"*{ext}" for ext in sorted(VIDEO_EXTENSIONS))), ("All files", "*.*")],
-        )
+        pattern = " ".join(f"*{extension}" for extension in sorted(VIDEO_EXTENSIONS))
+        selected, _ = QFileDialog.getOpenFileNames(self, "Add video files", "", f"Video files ({pattern});;All files (*)")
         if selected:
             self._add_paths([Path(path) for path in selected])
 
-    def _on_drop(self, event: object) -> str:
-        if self.renderer and self.renderer.running:
-            return str(REFUSE_DROP)
-        data = getattr(event, "data", "")
-        try:
-            paths = [Path(value) for value in self.tk.splitlist(data)]
-        except Exception:
-            paths = [Path(data.strip("{}"))] if data else []
-        self._add_paths(paths)
-        return str(COPY)
-
-    def _drop_action(self, _event: object) -> str:
-        return str(REFUSE_DROP if self.renderer and self.renderer.running else COPY)
-
     def _add_paths(self, paths: list[Path]) -> None:
+        if self.renderer and self.renderer.running:
+            return
         expanded: list[Path] = []
         for path in paths:
             if path.is_dir():
@@ -513,10 +835,16 @@ class FRUCApp(ctk.CTk):
             existing.add(key)
             job = RenderJob(resolved, status=JobStatus.PROBING)
             self.jobs[job.id] = job
-            self.tree.insert("", "end", iid=job.id, text=resolved.name, values=("Inspecting…", self.multiplier_var.get(), JobStatus.PROBING.value), tags=("active",))
+            item = QTreeWidgetItem([resolved.name, "Inspecting…", self.multiplier_control.value(), JobStatus.PROBING.value])
+            item.setData(0, Qt.ItemDataRole.UserRole, job.id)
+            item.setIcon(0, self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon))
+            item.setToolTip(0, str(resolved))
+            self.job_items[job.id] = item
+            self.tree.addTopLevelItem(item)
+            self._update_row(job)
             added.append(job)
         if added:
-            self.tree.selection_set(added[0].id)
+            self.tree.setCurrentItem(self.job_items[added[0].id])
             threading.Thread(target=self._probe_jobs, args=(added,), daemon=True).start()
         elif paths:
             self._append_log("WARNING", "No new supported top-level video files were found")
@@ -531,73 +859,102 @@ class FRUCApp(ctk.CTk):
             except Exception as exc:
                 self.events.put({"event": "probe_failed", "job_id": job.id, "error": str(exc)})
 
+    def _selected_job(self) -> RenderJob | None:
+        item = self.tree.currentItem()
+        return self.jobs.get(str(item.data(0, Qt.ItemDataRole.UserRole))) if item else None
+
     def _remove_selected(self) -> None:
         if self.renderer and self.renderer.running:
             return
-        for job_id in self.tree.selection():
-            self.jobs.pop(job_id, None)
-            self.tree.delete(job_id)
-        self.selection_var.set("No file selected")
+        item = self.tree.currentItem()
+        job = self._selected_job()
+        if not item or not job:
+            return
+        self.jobs.pop(job.id, None)
+        self.job_items.pop(job.id, None)
+        self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(item))
+        self._on_select()
 
     def _clear_completed(self) -> None:
         if self.renderer and self.renderer.running:
             return
         for job_id, job in list(self.jobs.items()):
-            if job.status in TERMINAL_STATUSES:
-                self.tree.delete(job_id)
-                del self.jobs[job_id]
+            if job.status not in TERMINAL_STATUSES:
+                continue
+            item = self.job_items.pop(job_id)
+            self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(item))
+            del self.jobs[job_id]
+        self._on_select()
 
-    def _on_select(self, _event: object = None) -> None:
-        selected = self.tree.selection()
-        if not selected:
-            self.selection_var.set("No file selected")
-            self.open_button.configure(state="disabled")
+    def _on_select(self) -> None:
+        job = self._selected_job()
+        running = bool(self.renderer and self.renderer.running)
+        if not job:
+            self.selection_label.setText("No file selected")
+            self.selection_label.setToolTip("")
+            self.open_button.setEnabled(False)
+            self.rerender_button.setEnabled(False)
+            self._update_diagnostics()
             return
-        job = self.jobs[selected[0]]
-        self.selection_var.set(f"{job.input_path}  •  {job.details}")
-        self.open_button.configure(state="normal" if job.output_path else "disabled")
+        text = f"{job.input_path}  •  {job.details}"
+        self.selection_label.setText(text)
+        self.selection_label.setToolTip(text)
+        self.open_button.setEnabled(bool(job.output_path))
+        self.rerender_button.setEnabled(not running and job.status in TERMINAL_STATUSES)
         self._update_diagnostics()
 
-    def _show_context_menu(self, event: object) -> None:
-        row = self.tree.identify_row(getattr(event, "y", 0))
-        if not row:
+    def _show_context_menu(self, position) -> None:  # type: ignore[no-untyped-def]
+        item = self.tree.itemAt(position)
+        if not item:
             return
-        self.tree.selection_set(row)
-        menu = Menu(self, tearoff=False)
-        menu.add_command(label="Open input folder", command=lambda: self._open_path(self.jobs[row].input_path.parent))
-        if self.jobs[row].output_path:
-            menu.add_command(label="Open output folder", command=self._open_selected_folder)
-            menu.add_command(label="Copy output path", command=lambda: self.clipboard_append(str(self.jobs[row].output_path)))
-        menu.add_separator()
-        menu.add_command(label="Remove", command=self._remove_selected, state="disabled" if self.renderer and self.renderer.running else "normal")
-        menu.tk_popup(getattr(event, "x_root", 0), getattr(event, "y_root", 0))
+        self.tree.setCurrentItem(item)
+        job = self._selected_job()
+        if not job:
+            return
+        menu = QMenu(self)
+        if job.status in TERMINAL_STATUSES and not (self.renderer and self.renderer.running):
+            menu.addAction("↻  Render again", self._rerender_selected)
+            menu.addSeparator()
+        menu.addAction("Open input folder", lambda: self._open_path(job.input_path.parent))
+        if job.output_path:
+            menu.addAction("Open output folder", self._open_selected_folder)
+            menu.addAction("Copy output path", lambda: QApplication.clipboard().setText(str(job.output_path)))
+        menu.addSeparator()
+        remove = menu.addAction("Remove", self._remove_selected)
+        remove.setEnabled(not (self.renderer and self.renderer.running))
+        menu.exec(self.tree.viewport().mapToGlobal(position))
 
     def _start_queue(self) -> None:
+        candidates = [job for job in self.jobs.values() if job.status in {JobStatus.WAITING, JobStatus.FAILED, JobStatus.CANCELLED}]
+        if not candidates:
+            QMessageBox.information(self, "Queue", "Add at least one video or use Render again on a finished item.")
+            return
+        self._begin_render(candidates)
+
+    def _rerender_selected(self) -> None:
+        job = self._selected_job()
+        if job and job.status in TERMINAL_STATUSES:
+            self._begin_render([job])
+
+    def _begin_render(self, candidates: list[RenderJob]) -> None:
         if not self.renderer or not self.capabilities or not self.capabilities.ready:
-            messagebox.showerror("Cannot render", "Required FFmpeg/Vulkan capabilities are not ready.")
+            QMessageBox.critical(self, "Cannot render", "Required FFmpeg/Vulkan capabilities are not ready.")
             return
         settings = self._collect_settings()
         if settings.video_codec not in self.capabilities.codecs:
-            messagebox.showerror("Video codec", "The selected codec is not supported by this Vulkan device.")
+            QMessageBox.critical(self, "Video codec", "The selected codec is not supported by this Vulkan device.")
             return
         if not settings.output_same_as_source:
             if not settings.output_directory:
-                messagebox.showerror("Output folder", "Choose a custom output folder or save beside the source.")
+                QMessageBox.critical(self, "Output folder", "Choose a custom output folder or save beside the source.")
                 return
             try:
                 Path(settings.output_directory).mkdir(parents=True, exist_ok=True)
             except OSError as exc:
-                messagebox.showerror("Output folder", str(exc))
+                QMessageBox.critical(self, "Output folder", str(exc))
                 return
-        candidates = [job for job in self.jobs.values() if job.status in {JobStatus.WAITING, JobStatus.FAILED, JobStatus.CANCELLED}]
-        if not candidates:
-            messagebox.showinfo("Queue", "Add at least one video or retry a failed/cancelled item.")
-            return
         for job in candidates:
-            job.progress = 0
-            job.error = ""
-            job.output_path = None
-            job.status = JobStatus.WAITING
+            self._reset_job(job)
             self._update_row(job)
         self.settings = settings
         save_settings(settings)
@@ -605,31 +962,35 @@ class FRUCApp(ctk.CTk):
         if self.renderer.start(candidates, settings):
             self._set_rendering_ui(True)
 
+    @staticmethod
+    def _reset_job(job: RenderJob) -> None:
+        job.progress = 0.0
+        job.error = ""
+        job.output_path = None
+        job.status = JobStatus.WAITING
+
     def _cancel_current(self) -> None:
         if self.renderer:
             self.renderer.cancel_current()
-            self.stage_var.set("Cancelling active jobs…")
+            self.stage_label.setText("Cancelling active jobs…")
 
     def _stop_queue(self) -> None:
         if self.renderer:
             self.renderer.stop_queue()
-            self.stage_var.set("Stopping queue…")
+            self.stage_label.setText("Stopping queue…")
 
     def _set_rendering_ui(self, running: bool) -> None:
-        self.start_button.configure(state="disabled" if running else "normal")
-        self.cancel_button.configure(state="normal" if running else "disabled")
-        self.stop_button.configure(state="normal" if running else "disabled")
-        self.add_button.configure(state="disabled" if running else "normal")
-        self.remove_button.configure(state="disabled" if running else "normal")
-        self.clear_button.configure(state="disabled" if running else "normal")
-        self.drop_zone.configure(state="disabled" if running else "normal")
-        for control in self.setting_controls:
-            try:
-                control.configure(state="disabled" if running else "normal")
-            except (ValueError, TypeError):
-                pass
+        self.start_button.setEnabled(not running and bool(self.capabilities and self.capabilities.ready))
+        self.cancel_button.setEnabled(running)
+        self.stop_button.setEnabled(running)
+        self.add_button.setEnabled(not running)
+        self.remove_button.setEnabled(not running)
+        self.clear_button.setEnabled(not running)
+        self.drop_zone.setEnabled(not running)
+        self.settings_content.setEnabled(not running)
         if not running:
             self._sync_output_controls()
+        self._on_select()
 
     def _poll_events(self) -> None:
         try:
@@ -637,8 +998,6 @@ class FRUCApp(ctk.CTk):
                 self._handle_event(self.events.get_nowait())
         except queue.Empty:
             pass
-        if not self._closing:
-            self.after(100, self._poll_events)
 
     def _handle_event(self, event: dict[str, object]) -> None:
         kind = event["event"]
@@ -647,28 +1006,29 @@ class FRUCApp(ctk.CTk):
             assert isinstance(caps, Capabilities)
             self.capabilities = caps
             if caps.ready:
-                self.capability_var.set("Vulkan ready")
-                self.capability_label.configure(text_color="#65d79a")
-                self.mixer_combo.configure(values=[MIXER_LABELS[mixer] for mixer in caps.mixers])
-                if MIXERS_BY_LABEL.get(self.mixer_var.get()) not in caps.mixers:
-                    self.mixer_var.set(MIXER_LABELS[caps.mixers[0]])
-                self.codec_combo.configure(values=[CODEC_LABELS[codec] for codec in caps.codecs])
-                if CODECS_BY_LABEL.get(self.codec_var.get()) not in caps.codecs:
-                    self.codec_var.set(CODEC_LABELS[caps.codecs[0]])
-                self._append_log(
-                    "INFO",
-                    f"{caps.version}; mixers: {', '.join(caps.mixers)}; codecs: {', '.join(caps.codecs)}",
-                )
+                self._set_capability("Vulkan ready", "ready")
+                current_mixer = MIXERS_BY_LABEL.get(self.mixer_combo.currentText(), self.settings.frame_mixer)
+                current_codec = CODECS_BY_LABEL.get(self.codec_combo.currentText(), self.settings.video_codec)
+                self.mixer_combo.blockSignals(True)
+                self.mixer_combo.clear()
+                self.mixer_combo.addItems([MIXER_LABELS[mixer] for mixer in caps.mixers])
+                self.mixer_combo.setCurrentText(MIXER_LABELS.get(current_mixer, MIXER_LABELS[caps.mixers[0]]))
+                self.mixer_combo.blockSignals(False)
+                self.codec_combo.blockSignals(True)
+                self.codec_combo.clear()
+                self.codec_combo.addItems([CODEC_LABELS[codec] for codec in caps.codecs])
+                self.codec_combo.setCurrentText(CODEC_LABELS.get(current_codec, CODEC_LABELS[caps.codecs[0]]))
+                self.codec_combo.blockSignals(False)
+                self.start_button.setEnabled(not (self.renderer and self.renderer.running))
+                self._append_log("INFO", f"{caps.version}; mixers: {', '.join(caps.mixers)}; codecs: {', '.join(caps.codecs)}")
             else:
-                self.capability_var.set("Missing: " + ", ".join(caps.missing or ["frame mixer"]))
-                self.capability_label.configure(text_color="#ff7272")
-                self.start_button.configure(state="disabled")
-                self._append_log("ERROR", self.capability_var.get())
+                self._set_capability("Missing: " + ", ".join(caps.missing or ["frame mixer"]), "error")
+                self.start_button.setEnabled(False)
+                self._append_log("ERROR", self.capability_label.text())
             self._update_diagnostics()
         elif kind == "capability_error":
-            self.capability_var.set("Capability check failed")
-            self.capability_label.configure(text_color="#ff7272")
-            self.start_button.configure(state="disabled")
+            self._set_capability("Capability check failed", "error")
+            self.start_button.setEnabled(False)
             self._append_log("ERROR", str(event["error"]))
         elif kind in {"probe_ready", "probed"}:
             job = self.jobs.get(str(event["job_id"]))
@@ -686,7 +1046,7 @@ class FRUCApp(ctk.CTk):
                 self._update_row(job)
                 self._append_log("ERROR", f"{job.input_path.name}: {job.error}")
         elif kind == "queue_started":
-            self.stage_var.set(f"Queue started • {event.get('parallel', 1)} parallel")
+            self.stage_label.setText(f"Queue started  •  {event.get('parallel', 1)} parallel")
         elif kind == "status":
             job = self.jobs.get(str(event["job_id"]))
             if job:
@@ -697,19 +1057,20 @@ class FRUCApp(ctk.CTk):
                     job.output_path = Path(event["output_path"])  # type: ignore[arg-type]
                 if job.status in {JobStatus.RENDERING, JobStatus.REMUXING, JobStatus.PROBING}:
                     self.current_job_id = job.id
-                    self.stage_var.set(f"{job.status.value}: {job.input_path.name}")
+                    self.stage_label.setText(f"{job.status.value}: {job.input_path.name}")
                 self._update_row(job)
                 self._update_overall()
                 self._on_select()
         elif kind == "progress":
             job = self.jobs.get(str(event["job_id"]))
             if job:
-                stage_fraction = float(event["fraction"])
-                job.progress = max(job.progress, stage_fraction)
-                self.current_progress.set(stage_fraction)
+                fraction = float(event["fraction"])
+                job.progress = max(job.progress, fraction)
+                self.current_progress.set_fraction(fraction)
                 eta = format_time(event.get("eta") if isinstance(event.get("eta"), (int, float)) else None)
-                self.progress_var.set(f"{stage_fraction * 100:.1f}%  •  {float(event['speed']):.2f}×  •  ETA {eta if event.get('eta') is not None else '--:--:--'}")
-                self.stage_var.set(f"{event['stage']}: {job.input_path.name}")
+                eta_text = eta if event.get("eta") is not None else "--:--:--"
+                self.progress_label.setText(f"{fraction * 100:.1f}%  •  {float(event['speed']):.2f}×  •  ETA {eta_text}")
+                self.stage_label.setText(f"{event['stage']}: {job.input_path.name}")
                 self._update_row(job)
                 self._update_overall()
         elif kind == "command":
@@ -721,35 +1082,52 @@ class FRUCApp(ctk.CTk):
         elif kind == "queue_finished":
             self._set_rendering_ui(False)
             self.current_job_id = None
-            self.stage_var.set("Queue stopped" if event.get("stopped") else "Queue finished")
-            self.current_progress.set(0)
-            self.progress_var.set("0%  •  0.00×  •  ETA --:--:--")
+            self.stage_label.setText("Queue stopped" if event.get("stopped") else "Queue finished")
+            self.current_progress.set_fraction(0, animate=False)
+            self.progress_label.setText("0%  •  0.00×  •  ETA --:--:--")
             self._update_overall()
 
     def _update_row(self, job: RenderJob) -> None:
-        if not self.tree.exists(job.id):
+        item = self.job_items.get(job.id)
+        if not item:
             return
         media = job.details if job.probe else (job.error or "Inspecting…")
         status = job.status.value
         if job.status in {JobStatus.RENDERING, JobStatus.REMUXING}:
             status = f"{status} {job.progress * 100:.0f}%"
-        tag = "done" if job.status == JobStatus.DONE else "failed" if job.status == JobStatus.FAILED else "cancelled" if job.status == JobStatus.CANCELLED else "active" if job.status in {JobStatus.PROBING, JobStatus.RENDERING, JobStatus.REMUXING} else ""
-        self.tree.item(job.id, values=(media, self.multiplier_var.get(), status), tags=(tag,) if tag else ())
+        item.setText(0, job.input_path.name)
+        item.setText(1, media)
+        item.setText(2, self.multiplier_control.value())
+        item.setText(3, status)
+        item.setToolTip(3, job.error)
+        color = {
+            JobStatus.DONE: self.colors["success"] if hasattr(self, "colors") else "#45d58a",
+            JobStatus.FAILED: self.colors["danger"] if hasattr(self, "colors") else "#ee6474",
+            JobStatus.CANCELLED: self.colors["warning"] if hasattr(self, "colors") else "#e1a14d",
+            JobStatus.PROBING: self.colors["accent"] if hasattr(self, "colors") else "#4395f7",
+            JobStatus.RENDERING: self.colors["accent"] if hasattr(self, "colors") else "#4395f7",
+            JobStatus.REMUXING: self.colors["accent"] if hasattr(self, "colors") else "#4395f7",
+        }.get(job.status)
+        brush = QBrush(QColor(color)) if color else QBrush()
+        for column in range(4):
+            item.setForeground(column, brush)
 
     def _update_overall(self) -> None:
         jobs = [self.jobs[job_id] for job_id in self.active_job_ids if job_id in self.jobs]
         if not jobs:
-            self.overall_progress.set(0)
-            self.overall_var.set("Queue 0%")
+            self.overall_progress.set_fraction(0, animate=False)
+            self.overall_label.setText("Queue 0%")
             return
         weights = [job.probe.duration if job.probe else 1.0 for job in jobs]
         done = sum(weight * (1.0 if job.status in TERMINAL_STATUSES else job.progress) for job, weight in zip(jobs, weights))
         fraction = done / sum(weights)
-        self.overall_progress.set(fraction)
-        self.overall_var.set(f"Queue {fraction * 100:.1f}%")
+        self.overall_progress.set_fraction(fraction)
+        self.overall_label.setText(f"Queue {fraction * 100:.1f}%")
 
-    def _settings_changed(self) -> None:
-        self.preset_var.set("Custom")
+    def _settings_changed(self, *_args) -> None:
+        if self._applying_preset:
+            return
+        self.preset_combo.setCurrentText("Custom")
         for job in self.jobs.values():
             self._update_row(job)
         self._update_diagnostics()
@@ -760,180 +1138,171 @@ class FRUCApp(ctk.CTk):
         multiplier, mixer = PRESETS[name]
         if self.capabilities and mixer not in self.capabilities.mixers:
             mixer = self.capabilities.mixers[0]
-        self.multiplier_var.set(f"{multiplier}×")
-        self.mixer_var.set(MIXER_LABELS[mixer])
-        self.blur_var.set(1.0)
-        self.blur_label.configure(text="100%")
+        self._applying_preset = True
+        self.multiplier_control.set_value(f"{multiplier}×")
+        self.mixer_combo.setCurrentText(MIXER_LABELS[mixer])
+        self.blur_slider.setValue(100)
+        self.blur_label.setText("100%")
+        self._applying_preset = False
         for job in self.jobs.values():
             self._update_row(job)
         self._update_diagnostics()
 
-    def _qp_changed(self, value: float) -> None:
-        self.qp_var.set(round(value))
-        self.qp_label.configure(text=f"QP {self.qp_var.get()}")
+    def _qp_changed(self, value: int) -> None:
+        self.qp_label.setText(f"QP {value}")
         self._settings_changed()
 
-    def _blur_changed(self, value: float) -> None:
-        self.blur_var.set(round(value, 2))
-        self.blur_label.configure(text=f"{self.blur_var.get() * 100:.0f}%")
+    def _blur_changed(self, value: int) -> None:
+        snapped = round(value / 5) * 5
+        if snapped != value:
+            self.blur_slider.setValue(snapped)
+            return
+        self.blur_label.setText(f"{snapped}%")
         self._settings_changed()
 
-    def _output_mode_changed(self) -> None:
+    def _output_mode_changed(self, *_args) -> None:
         self._sync_output_controls()
         self._settings_changed()
 
     def _sync_output_controls(self) -> None:
-        enabled = not self.same_output_var.get() and not (self.renderer and self.renderer.running)
-        self.output_entry.configure(state="normal" if enabled else "disabled")
-        self.output_browse.configure(state="normal" if enabled else "disabled")
+        enabled = not self.same_output_check.isChecked() and not (self.renderer and self.renderer.running)
+        self.output_entry.setEnabled(enabled)
+        self.output_browse.setEnabled(enabled)
 
     def _pick_output_directory(self) -> None:
-        selected = filedialog.askdirectory(title="Choose output folder")
+        selected = QFileDialog.getExistingDirectory(self, "Choose output folder")
         if selected:
-            self.output_dir_var.set(selected)
-            self._settings_changed()
-
-    def _change_appearance(self, value: str) -> None:
-        ctk.set_appearance_mode(value)
-        self.settings.appearance = value
-        save_settings(self._collect_settings())
+            self.output_entry.setText(selected)
 
     def _device_changed(self, _value: str) -> None:
         if self.renderer and self.renderer.running:
             return
-        self.capability_var.set("Checking Vulkan device…")
-        self.capability_label.configure(text_color="#e7b75f")
-        self.start_button.configure(state="disabled")
         self._start_capability_check()
         self._settings_changed()
 
     def _collect_settings(self) -> RenderSettings:
         return RenderSettings(
-            multiplier=int(self.multiplier_var.get().rstrip("×")),
-            performance=self.performance_var.get().lower(),
-            grid=int(self.grid_var.get()),
-            frame_mixer=MIXERS_BY_LABEL.get(self.mixer_var.get(), "linear"),
-            blur_amount=float(self.blur_var.get()),
-            video_codec=CODECS_BY_LABEL.get(self.codec_var.get(), "h264"),
-            qp=int(self.qp_var.get()),
-            parallel_jobs=int(self.parallel_var.get()),
-            auto_mp4=self.auto_mp4_var.get(),
-            keep_ts=self.keep_ts_var.get(),
-            output_same_as_source=self.same_output_var.get(),
-            output_directory=self.output_dir_var.get().strip(),
-            appearance=self.appearance_var.get(),
-            device_index=int(self.device_var.get()),
+            multiplier=int(self.multiplier_control.value().rstrip("×")),
+            performance=self.performance_combo.currentText().lower(),
+            grid=int(self.grid_combo.currentText()),
+            frame_mixer=MIXERS_BY_LABEL.get(self.mixer_combo.currentText(), "linear"),
+            blur_amount=self.blur_slider.value() / 100,
+            video_codec=CODECS_BY_LABEL.get(self.codec_combo.currentText(), "h264"),
+            qp=self.qp_slider.value(),
+            parallel_jobs=int(self.parallel_control.value()),
+            auto_mp4=self.auto_mp4_check.isChecked(),
+            keep_ts=self.keep_ts_check.isChecked(),
+            output_same_as_source=self.same_output_check.isChecked(),
+            output_directory=self.output_entry.text().strip(),
+            appearance=self.appearance,
+            device_index=int(self.device_combo.currentText()),
             advanced_open=self.advanced_visible,
         ).validate()
 
     def _toggle_advanced(self, force: bool | None = None) -> None:
-        show = (not self.advanced_visible) if force is None else force
+        show = not self.advanced_visible if force is None else force
         self.advanced_visible = show
-        if show:
-            self.advanced_frame.grid(row=self.advanced_grid_row, column=0, sticky="ew", padx=8, pady=(0, 8))
-            self.advanced_button.configure(text="Advanced ▴")
-        else:
-            self.advanced_frame.grid_remove()
-            self.advanced_button.configure(text="Advanced ▾")
+        self.advanced_button.blockSignals(True)
+        self.advanced_button.setChecked(show)
+        self.advanced_button.setText("Advanced  ▴" if show else "Advanced  ▾")
+        self.advanced_button.blockSignals(False)
+        self.advanced_frame.setVisible(show)
 
     def _toggle_log(self) -> None:
         self.log_visible = not self.log_visible
-        if self.log_visible:
-            self.log_box.grid(row=5, column=0, sticky="ew", pady=(4, 0))
-            self.log_toggle.configure(text="Hide render log ▴")
-        else:
-            self.log_box.grid_remove()
-            self.log_toggle.configure(text="Show render log ▾")
+        self.log_box.setVisible(self.log_visible)
+        self.log_toggle.setText("Hide render log  ▴" if self.log_visible else "Show render log  ▾")
 
     def _append_log(self, level: str, message: str) -> None:
         line = f"[{time.strftime('%H:%M:%S')}] {level}: {message}"
         self.logger.log(logging.ERROR if level == "ERROR" else logging.WARNING if level == "WARNING" else logging.INFO, message)
-        remove_first = len(self.log_lines) == self.log_lines.maxlen
-        self.log_lines.append(line)
-        if not hasattr(self, "log_box"):
-            return
-        self.log_box.configure(state="normal")
-        if remove_first:
-            self.log_box.delete("1.0", "2.0")
-        self.log_box.insert("end", line + "\n")
-        self.log_box.see("end")
-        self.log_box.configure(state="disabled")
+        if hasattr(self, "log_box"):
+            self.log_box.appendPlainText(line)
 
     def _update_diagnostics(self, exact_command: str | None = None, exact_filter: str | None = None) -> None:
-        selected = self.tree.selection() if hasattr(self, "tree") else ()
-        job = self.jobs.get(selected[0]) if selected else None
+        if not hasattr(self, "diagnostics_box"):
+            return
+        job = self._selected_job() if hasattr(self, "tree") else None
         settings = self._collect_settings()
         source_fps = job.probe.fps_rational if job and job.probe else "—"
         generated = f"{source_fps} × {settings.multiplier}" if job and job.probe else "—"
         active_filter = exact_filter or (filter_chain(job.probe, settings) if job and job.probe else "—")
         version = self.capabilities.version if self.capabilities else "Checking…"
         text = (
-            f"FFmpeg: {self.ffmpeg or 'not found'}\n"
-            f"FFprobe: {self.ffprobe or 'not found'}\n"
-            f"Version: {version}\n"
-            f"Source FPS: {source_fps}\n"
-            f"Generated internal FPS: {generated}\n"
-            f"Vulkan device: {settings.device_index}\n"
-            f"Filter: {active_filter}"
+            f"FFmpeg: {self.ffmpeg or 'not found'}\nFFprobe: {self.ffprobe or 'not found'}\n"
+            f"Version: {version}\nSource FPS: {source_fps}\nGenerated internal FPS: {generated}\n"
+            f"Vulkan device: {settings.device_index}\nFilter: {active_filter}"
         )
         if exact_command:
             text += f"\nCommand: {exact_command}"
-        self.diagnostics_var.set(text)
+        self.diagnostics_box.setPlainText(text)
 
     def _copy_command(self) -> None:
-        selected = self.tree.selection()
-        if not selected:
-            messagebox.showinfo("Copy Command", "Select a probed queue item first.")
+        job = self._selected_job()
+        if not job:
+            QMessageBox.information(self, "Copy command", "Select a probed queue item first.")
             return
-        job = self.jobs[selected[0]]
         if not job.probe or not self.ffmpeg:
-            messagebox.showinfo("Copy Command", "The selected item has not been probed yet.")
+            QMessageBox.information(self, "Copy command", "The selected item has not been probed yet.")
             return
         settings = self._collect_settings()
         try:
-            ts_path, _ = output_paths(job.input_path, job.probe, settings)
-            text = command_text(build_render_command(self.ffmpeg, job.input_path, ts_path, job.probe, settings))
+            intermediate, _ = output_paths(job.input_path, job.probe, settings)
+            text = command_text(build_render_command(self.ffmpeg, job.input_path, intermediate, job.probe, settings))
         except Exception as exc:
-            messagebox.showerror("Copy Command", str(exc))
+            QMessageBox.critical(self, "Copy command", str(exc))
             return
-        self.clipboard_clear()
-        self.clipboard_append(text)
-        self.stage_var.set("Command copied to clipboard")
+        QApplication.clipboard().setText(text)
+        self.stage_label.setText("Command copied to clipboard")
 
-    def _open_selected_folder(self, _event: object = None) -> None:
-        selected = self.tree.selection()
-        if not selected:
-            return
-        job = self.jobs[selected[0]]
-        self._open_path(job.output_path.parent if job.output_path else job.input_path.parent)
+    def _open_selected_folder(self) -> None:
+        job = self._selected_job()
+        if job:
+            self._open_path(job.output_path.parent if job.output_path else job.input_path.parent)
 
-    @staticmethod
-    def _open_path(path: Path) -> None:
+    def _open_path(self, path: Path) -> None:
         try:
             os.startfile(path)  # type: ignore[attr-defined]
         except OSError as exc:
-            messagebox.showerror("Open folder", str(exc))
+            QMessageBox.critical(self, "Open folder", str(exc))
 
-    def _on_close(self) -> None:
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self._force_close:
+            event.accept()
+            return
         if self.renderer and self.renderer.running:
-            if not messagebox.askyesno("Exit", "Stop the active FFmpeg jobs and exit?"):
+            answer = QMessageBox.question(
+                self, "Exit", "Stop the active FFmpeg jobs and exit?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                event.ignore()
                 return
             self._closing = True
             save_settings(self._collect_settings())
             self.renderer.stop_queue()
-            deadline = time.monotonic() + 5
-
-            def finish() -> None:
-                if self.renderer and self.renderer.running and time.monotonic() < deadline:
-                    self.after(100, finish)
-                else:
-                    self.destroy()
-
-            finish()
+            self._close_deadline = time.monotonic() + 5
+            event.ignore()
+            QTimer.singleShot(100, self._finish_close)
             return
         save_settings(self._collect_settings())
-        self.destroy()
+        event.accept()
+
+    def _finish_close(self) -> None:
+        if self.renderer and self.renderer.running and time.monotonic() < self._close_deadline:
+            QTimer.singleShot(100, self._finish_close)
+            return
+        self._force_close = True
+        self.close()
 
 
 def run() -> None:
-    FRUCApp().mainloop()
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setApplicationName("FRUC Motion Blur")
+    app.setOrganizationName("Kanibal")
+    app.setStyle("Fusion")
+    app.setWindowIcon(app_icon())
+    window = FRUCApp()
+    window.show()
+    raise SystemExit(app.exec())

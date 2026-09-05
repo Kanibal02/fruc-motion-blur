@@ -31,7 +31,9 @@ Double-click `fruc_motion_blur.pyw`, or run:
 python .\fruc_motion_blur.pyw
 ```
 
-Drop files or a folder onto the add area. Folder drops scan supported videos in that folder only; they are intentionally not recursive. Choose a preset or individual settings and select **Start Queue**. Jobs run sequentially.
+Drop files or a folder onto the add area. Folder drops scan supported videos in that folder only; they are intentionally not recursive. Choose a preset or individual settings and select **Start Queue**.
+
+The PySide6 interface keeps the console-free `.pyw` launcher while providing native drag-and-drop, dark/light/system themes, smooth progress animation, and a scalable Qt layout. Select a finished item and use **Render again** to immediately process only that file with the settings currently shown; its previous output is kept and the new render receives the usual numbered suffix.
 
 ## Render behavior
 
@@ -88,7 +90,7 @@ Tests cover rational FPS handling, exact filter construction, Vulkan argument or
 
 ```text
 fruc_motion_blur.pyw       Windows GUI entry point
-fruc_app/app.py            CustomTkinter interface and main-thread event handling
+fruc_app/app.py            PySide6 interface and main-thread event handling
 fruc_app/ffmpeg.py         Probe, capability, command, naming, and progress helpers
 fruc_app/renderer.py       Sequential worker and process lifecycle
 fruc_app/models.py         Jobs, settings, statuses, and media metadata
