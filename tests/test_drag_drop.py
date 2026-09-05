@@ -7,10 +7,11 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QMimeData, QUrl
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
+from PySide6.QtGui import QWheelEvent
+from PySide6.QtWidgets import QApplication, QWidget
 
-from fruc_app.app import DropZone, FRUCApp
+from fruc_app.app import AnimatedComboBox, DropZone, FRUCApp, SmoothScrollArea
 from fruc_app.models import JobStatus, RenderJob
 
 
@@ -38,6 +39,26 @@ class QtUiTests(unittest.TestCase):
         self.assertEqual(job.progress, 0.0)
         self.assertIsNone(job.output_path)
         self.assertEqual(job.error, "")
+
+    def test_wheel_over_picker_scrolls_panel_without_changing_selection(self) -> None:
+        scroll = SmoothScrollArea()
+        content = QWidget()
+        content.setMinimumHeight(1000)
+        picker = AnimatedComboBox(content)
+        picker.addItems(["First", "Second"])
+        picker.setGeometry(0, 0, 120, 40)
+        scroll.setWidget(content)
+        scroll.resize(200, 200)
+        scroll.show()
+        self.qt_app.processEvents()
+        wheel = QWheelEvent(
+            QPointF(5, 5), QPointF(5, 5), QPoint(), QPoint(0, -120),
+            Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.ScrollUpdate, False,
+        )
+        QApplication.sendEvent(picker, wheel)
+        self.assertEqual(picker.currentIndex(), 0)
+        self.assertEqual(scroll._scroll_animation.endValue(), 82)
 
 
 if __name__ == "__main__":

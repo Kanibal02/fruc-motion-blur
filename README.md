@@ -33,7 +33,7 @@ python .\fruc_motion_blur.pyw
 
 Drop files or a folder onto the add area. Folder drops scan supported videos in that folder only; they are intentionally not recursive. Choose a preset or individual settings and select **Start Queue**.
 
-The PySide6 interface keeps the console-free `.pyw` launcher while providing native drag-and-drop, dark/light/system themes, smooth progress animation, and a scalable Qt layout. Select a finished item and use **Render again** to immediately process only that file with the settings currently shown; its previous output is kept and the new render receives the usual numbered suffix.
+The PySide6 interface keeps the console-free `.pyw` launcher while providing native drag-and-drop, dark/light/system themes, animated pickers and progress, smooth settings scrolling, and a scalable Qt layout. Mouse-wheel input over a picker or slider always scrolls the settings panel instead of changing the hovered value. Select a finished item and use **Render again** to immediately process only that file with the settings currently shown; its previous output is kept and the new render receives the usual numbered suffix.
 
 ## Render behavior
 

@@ -10,7 +10,19 @@ import webbrowser
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from PySide6.QtCore import QEasingCurve, QMimeData, QPropertyAnimation, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import (
+    QAbstractAnimation,
+    QEasingCurve,
+    QMimeData,
+    QParallelAnimationGroup,
+    QPoint,
+    QPropertyAnimation,
+    QRectF,
+    QSize,
+    Qt,
+    QTimer,
+    Signal,
+)
 from PySide6.QtGui import (
     QAction,
     QActionGroup,
@@ -21,6 +33,7 @@ from PySide6.QtGui import (
     QIcon,
     QPainter,
     QPalette,
+    QPen,
     QPixmap,
 )
 from PySide6.QtWidgets import (
@@ -123,6 +136,32 @@ def app_icon() -> QIcon:
     return QIcon(pixmap)
 
 
+def line_icon(kind: str, color: str) -> QIcon:
+    pixmap = QPixmap(32, 32)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(color), 2.2)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    painter.setPen(pen)
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    if kind == "trash":
+        painter.drawLine(8, 9, 24, 9)
+        painter.drawLine(13, 6, 19, 6)
+        painter.drawRoundedRect(QRectF(10, 11, 12, 14), 2, 2)
+        painter.drawLine(14, 14, 14, 22)
+        painter.drawLine(18, 14, 18, 22)
+    else:
+        painter.drawLine(6, 9, 15, 9)
+        painter.drawLine(6, 16, 15, 16)
+        painter.drawLine(6, 23, 15, 23)
+        painter.drawLine(18, 19, 21, 22)
+        painter.drawLine(21, 22, 27, 13)
+    painter.end()
+    return QIcon(pixmap)
+
+
 def theme_colors(dark: bool) -> dict[str, str]:
     if dark:
         return {
@@ -180,6 +219,7 @@ def theme_stylesheet(c: dict[str, str]) -> str:
             background: {c['card']}; border: 1px solid {c['border']}; border-radius: 8px;
             selection-background-color: {c['selection']}; outline: 0; padding: 4px;
         }}
+        QComboBox QAbstractItemView::item {{ min-height: 28px; padding: 3px 8px; }}
         QPushButton, QToolButton {{
             min-height: 34px; background: {c['raised']}; border: 1px solid {c['border']};
             border-radius: 8px; padding: 0 13px; font-weight: 600;
@@ -295,6 +335,103 @@ class SmoothProgressBar(QProgressBar):
         self.animation.setStartValue(self.value())
         self.animation.setEndValue(target)
         self.animation.start()
+
+
+def animate_popup(popup: QWidget, owner: QWidget) -> None:
+    previous = getattr(owner, "_popup_animation", None)
+    if previous:
+        previous.stop()
+        previous.deleteLater()
+    final_position = popup.pos()
+    popup.setWindowOpacity(0.0)
+    popup.move(final_position + QPoint(0, -7))
+    animation = QParallelAnimationGroup(owner)
+    fade = QPropertyAnimation(popup, b"windowOpacity", animation)
+    fade.setDuration(135)
+    fade.setStartValue(0.0)
+    fade.setEndValue(1.0)
+    fade.setEasingCurve(QEasingCurve.Type.OutCubic)
+    slide = QPropertyAnimation(popup, b"pos", animation)
+    slide.setDuration(165)
+    slide.setStartValue(popup.pos())
+    slide.setEndValue(final_position)
+    slide.setEasingCurve(QEasingCurve.Type.OutCubic)
+    owner._popup_animation = animation  # type: ignore[attr-defined]
+    animation.start()
+
+
+class SmoothScrollArea(QScrollArea):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._scroll_target = 0
+        self._scroll_animation = QPropertyAnimation(self.verticalScrollBar(), b"value", self)
+        self._scroll_animation.setDuration(190)
+        self._scroll_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    def smooth_wheel(self, event) -> None:  # type: ignore[no-untyped-def]
+        bar = self.verticalScrollBar()
+        pixels = event.pixelDelta().y()
+        if pixels:
+            self._scroll_animation.stop()
+            bar.setValue(bar.value() - pixels)
+            self._scroll_target = bar.value()
+            event.accept()
+            return
+        steps = event.angleDelta().y() / 120
+        if not steps:
+            event.ignore()
+            return
+        base = (
+            self._scroll_target
+            if self._scroll_animation.state() == QAbstractAnimation.State.Running
+            else bar.value()
+        )
+        self._scroll_target = max(bar.minimum(), min(bar.maximum(), round(base - steps * 82)))
+        self._scroll_animation.stop()
+        self._scroll_animation.setStartValue(bar.value())
+        self._scroll_animation.setEndValue(self._scroll_target)
+        self._scroll_animation.start()
+        event.accept()
+
+    def wheelEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        self.smooth_wheel(event)
+
+
+def forward_wheel(widget: QWidget, event) -> None:  # type: ignore[no-untyped-def]
+    parent = widget.parentWidget()
+    while parent:
+        if isinstance(parent, SmoothScrollArea):
+            parent.smooth_wheel(event)
+            return
+        parent = parent.parentWidget()
+    event.ignore()
+
+
+class AnimatedComboBox(QComboBox):
+    def showPopup(self) -> None:
+        super().showPopup()
+        animate_popup(self.view().window(), self)
+
+    def hidePopup(self) -> None:
+        animation = getattr(self, "_popup_animation", None)
+        if animation:
+            animation.stop()
+        self.view().window().setWindowOpacity(1.0)
+        super().hidePopup()
+
+    def wheelEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        forward_wheel(self, event)
+
+
+class ScrollSafeSlider(QSlider):
+    def wheelEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        forward_wheel(self, event)
+
+
+class AnimatedMenu(QMenu):
+    def showEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        super().showEvent(event)
+        animate_popup(self, self)
 
 
 class SegmentedControl(QWidget):
@@ -456,7 +593,7 @@ class FRUCApp(QMainWindow):
         self.appearance_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.appearance_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.appearance_button.setMinimumWidth(112)
-        theme_menu = QMenu(self.appearance_button)
+        theme_menu = AnimatedMenu(self.appearance_button)
         self.theme_actions: dict[str, QAction] = {}
         group = QActionGroup(theme_menu)
         group.setExclusive(True)
@@ -504,7 +641,7 @@ class FRUCApp(QMainWindow):
         self.rerender_button.setToolTip("Render the selected finished file again with the current settings")
         self.rerender_button.setEnabled(False)
         self.add_button = self._button("Add files", self._pick_files, QStyle.StandardPixmap.SP_DialogOpenButton, compact=True)
-        self.remove_button = self._button("Remove", self._remove_selected, QStyle.StandardPixmap.SP_TrashIcon, compact=True)
+        self.remove_button = self._button("Remove", self._remove_selected, compact=True)
         self.clear_button = self._button("Clear finished", self._clear_completed, compact=True)
         for button in (self.rerender_button, self.add_button, self.remove_button, self.clear_button):
             toolbar.addWidget(button)
@@ -579,7 +716,7 @@ class FRUCApp(QMainWindow):
         self._build_settings(root, body)
 
     def _build_settings(self, parent: QWidget, body: QHBoxLayout) -> None:
-        scroll = QScrollArea(parent)
+        scroll = SmoothScrollArea(parent)
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setMinimumWidth(370)
@@ -602,7 +739,7 @@ class FRUCApp(QMainWindow):
         panel.addLayout(heading)
 
         self._section(panel, "Preset")
-        self.preset_combo = QComboBox(self.settings_content)
+        self.preset_combo = AnimatedComboBox(self.settings_content)
         self.preset_combo.addItems(["Custom", *PRESETS])
         self.preset_combo.setCurrentText("Custom")
         self.preset_combo.textActivated.connect(self._apply_preset)
@@ -621,11 +758,11 @@ class FRUCApp(QMainWindow):
         grid_label.setObjectName("muted")
         flow.addWidget(performance_label, 0, 0)
         flow.addWidget(grid_label, 0, 1)
-        self.performance_combo = QComboBox(self.settings_content)
+        self.performance_combo = AnimatedComboBox(self.settings_content)
         self.performance_combo.addItems(["Fast", "Medium", "Slow"])
         self.performance_combo.setCurrentText(self.settings.performance.title())
         self.performance_combo.currentTextChanged.connect(self._settings_changed)
-        self.grid_combo = QComboBox(self.settings_content)
+        self.grid_combo = AnimatedComboBox(self.settings_content)
         self.grid_combo.addItems(["1", "2", "4"])
         self.grid_combo.setCurrentText(str(self.settings.grid))
         self.grid_combo.currentTextChanged.connect(self._settings_changed)
@@ -635,14 +772,14 @@ class FRUCApp(QMainWindow):
         self._hint(panel, "Fast = quickest; Slow = best matching\nGrid 1 = finest detail; 4 = faster/coarser")
 
         self._section(panel, "Motion mixer")
-        self.mixer_combo = QComboBox(self.settings_content)
+        self.mixer_combo = AnimatedComboBox(self.settings_content)
         self.mixer_combo.addItem(MIXER_LABELS.get(self.settings.frame_mixer, MIXER_LABELS["linear"]))
         self.mixer_combo.currentTextChanged.connect(self._settings_changed)
         panel.addWidget(self.mixer_combo)
         self._hint(panel, "Detected libplacebo temporal mixers only")
         self._section(panel, "Blur amount")
         blur_row = QHBoxLayout()
-        self.blur_slider = QSlider(Qt.Orientation.Horizontal, self.settings_content)
+        self.blur_slider = ScrollSafeSlider(Qt.Orientation.Horizontal, self.settings_content)
         self.blur_slider.setRange(25, 200)
         self.blur_slider.setSingleStep(5)
         self.blur_slider.setValue(round(self.settings.blur_amount * 100))
@@ -655,13 +792,13 @@ class FRUCApp(QMainWindow):
         self._hint(panel, "100% = original look  •  lower = shorter  •  higher = longer")
 
         self._section(panel, "Video codec / quality")
-        self.codec_combo = QComboBox(self.settings_content)
+        self.codec_combo = AnimatedComboBox(self.settings_content)
         self.codec_combo.addItem(CODEC_LABELS.get(self.settings.video_codec, CODEC_LABELS["h264"]))
         self.codec_combo.currentTextChanged.connect(self._settings_changed)
         panel.addWidget(self.codec_combo)
         self._hint(panel, "Same QP control  •  H.264 is safest for video editors")
         qp_row = QHBoxLayout()
-        self.qp_slider = QSlider(Qt.Orientation.Horizontal, self.settings_content)
+        self.qp_slider = ScrollSafeSlider(Qt.Orientation.Horizontal, self.settings_content)
         self.qp_slider.setRange(18, 40)
         self.qp_slider.setValue(self.settings.qp)
         self.qp_slider.valueChanged.connect(self._qp_changed)
@@ -711,7 +848,7 @@ class FRUCApp(QMainWindow):
         advanced.setContentsMargins(11, 11, 11, 11)
         advanced.setSpacing(7)
         advanced.addWidget(QLabel("Vulkan device index", self.advanced_frame))
-        self.device_combo = QComboBox(self.advanced_frame)
+        self.device_combo = AnimatedComboBox(self.advanced_frame)
         self.device_combo.addItems([str(index) for index in range(8)])
         self.device_combo.setCurrentText(str(self.settings.device_index))
         self.device_combo.textActivated.connect(self._device_changed)
@@ -771,6 +908,10 @@ class FRUCApp(QMainWindow):
         labels = {"Dark": "☾  Dark", "Light": "☀  Light", "System": "◐  System"}
         self.appearance_button.setText(labels[self.appearance])
         self.theme_actions[self.appearance].setChecked(True)
+        self.remove_button.setIcon(line_icon("trash", self.colors["danger"]))
+        self.clear_button.setIcon(line_icon("clear", self.colors["success"]))
+        self.remove_button.setIconSize(QSize(17, 17))
+        self.clear_button.setIconSize(QSize(17, 17))
         repolish(self.capability_label)
         for job in self.jobs.values():
             self._update_row(job)
@@ -911,7 +1052,7 @@ class FRUCApp(QMainWindow):
         job = self._selected_job()
         if not job:
             return
-        menu = QMenu(self)
+        menu = AnimatedMenu(self)
         if job.status in TERMINAL_STATUSES and not (self.renderer and self.renderer.running):
             menu.addAction("↻  Render again", self._rerender_selected)
             menu.addSeparator()
