@@ -7,16 +7,13 @@ import sys
 import threading
 import time
 import webbrowser
+from collections.abc import Callable
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from PySide6.QtCore import (
-    QAbstractAnimation,
-    QEasingCurve,
     QMimeData,
-    QParallelAnimationGroup,
     QPoint,
-    QPropertyAnimation,
     QRectF,
     QSize,
     Qt,
@@ -60,6 +57,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QStyle,
+    QStyleOptionSlider,
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -322,9 +320,7 @@ class SmoothProgressBar(QProgressBar):
         super().__init__(parent)
         self.setRange(0, 1000)
         self.setTextVisible(False)
-        self.animation = QPropertyAnimation(self, b"value", self)
-        self.animation.setDuration(180)
-        self.animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.animation = HighRefreshTween(self, lambda value: self.setValue(round(value)))
 
     def set_fraction(self, fraction: float, animate: bool = True) -> None:
         target = round(min(1.0, max(0.0, fraction)) * 1000)
@@ -332,47 +328,83 @@ class SmoothProgressBar(QProgressBar):
         if not animate:
             self.setValue(target)
             return
-        self.animation.setStartValue(self.value())
-        self.animation.setEndValue(target)
-        self.animation.start()
+        self.animation.start(self.value(), target, 180)
+
+
+def frame_interval_ms(refresh_rate: float) -> int:
+    refresh_rate = refresh_rate if refresh_rate > 0 else 60.0
+    return max(1, int(1000 / refresh_rate))
+
+
+class HighRefreshTween:
+    def __init__(self, owner: QWidget, update: Callable[[float], None]) -> None:
+        self._owner = owner
+        self._update = update
+        self._timer = QTimer(owner)
+        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self._timer.timeout.connect(self._tick)
+        self._start_value = 0.0
+        self.end_value = 0.0
+        self._duration = 0.0
+        self._started = 0.0
+
+    @property
+    def running(self) -> bool:
+        return self._timer.isActive()
+
+    def start(self, start_value: float, end_value: float, duration_ms: int) -> None:
+        screen = self._owner.screen()
+        self._timer.setInterval(frame_interval_ms(screen.refreshRate() if screen else 60.0))
+        self._start_value = float(start_value)
+        self.end_value = float(end_value)
+        self._duration = max(0.001, duration_ms / 1000)
+        self._started = time.perf_counter()
+        self._timer.start()
+        self._tick()
+
+    def stop(self) -> None:
+        self._timer.stop()
+
+    def _tick(self) -> None:
+        progress = min(1.0, (time.perf_counter() - self._started) / self._duration)
+        eased = 1 - (1 - progress) ** 3
+        self._update(self._start_value + (self.end_value - self._start_value) * eased)
+        if progress >= 1:
+            self._timer.stop()
+            self._update(self.end_value)
 
 
 def animate_popup(popup: QWidget, owner: QWidget) -> None:
     previous = getattr(owner, "_popup_animation", None)
     if previous:
         previous.stop()
-        previous.deleteLater()
     final_position = popup.pos()
+    start_position = final_position + QPoint(0, -7)
     popup.setWindowOpacity(0.0)
-    popup.move(final_position + QPoint(0, -7))
-    animation = QParallelAnimationGroup(owner)
-    fade = QPropertyAnimation(popup, b"windowOpacity", animation)
-    fade.setDuration(135)
-    fade.setStartValue(0.0)
-    fade.setEndValue(1.0)
-    fade.setEasingCurve(QEasingCurve.Type.OutCubic)
-    slide = QPropertyAnimation(popup, b"pos", animation)
-    slide.setDuration(165)
-    slide.setStartValue(popup.pos())
-    slide.setEndValue(final_position)
-    slide.setEasingCurve(QEasingCurve.Type.OutCubic)
+    popup.move(start_position)
+
+    def update(progress: float) -> None:
+        popup.setWindowOpacity(progress)
+        popup.move(final_position.x(), round(start_position.y() + 7 * progress))
+
+    animation = HighRefreshTween(owner, update)
     owner._popup_animation = animation  # type: ignore[attr-defined]
-    animation.start()
+    animation.start(0.0, 1.0, 165)
 
 
 class SmoothScrollArea(QScrollArea):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._scroll_target = 0
-        self._scroll_animation = QPropertyAnimation(self.verticalScrollBar(), b"value", self)
-        self._scroll_animation.setDuration(190)
-        self._scroll_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._scroll_tween = HighRefreshTween(
+            self, lambda value: self.verticalScrollBar().setValue(round(value))
+        )
 
     def smooth_wheel(self, event) -> None:  # type: ignore[no-untyped-def]
         bar = self.verticalScrollBar()
         pixels = event.pixelDelta().y()
         if pixels:
-            self._scroll_animation.stop()
+            self._scroll_tween.stop()
             bar.setValue(bar.value() - pixels)
             self._scroll_target = bar.value()
             event.accept()
@@ -383,14 +415,11 @@ class SmoothScrollArea(QScrollArea):
             return
         base = (
             self._scroll_target
-            if self._scroll_animation.state() == QAbstractAnimation.State.Running
+            if self._scroll_tween.running
             else bar.value()
         )
         self._scroll_target = max(bar.minimum(), min(bar.maximum(), round(base - steps * 82)))
-        self._scroll_animation.stop()
-        self._scroll_animation.setStartValue(bar.value())
-        self._scroll_animation.setEndValue(self._scroll_target)
-        self._scroll_animation.start()
+        self._scroll_tween.start(bar.value(), self._scroll_target, 190)
         event.accept()
 
     def wheelEvent(self, event) -> None:  # type: ignore[no-untyped-def]
@@ -423,9 +452,69 @@ class AnimatedComboBox(QComboBox):
         forward_wheel(self, event)
 
 
-class ScrollSafeSlider(QSlider):
+class SmoothSlider(QSlider):
+    def __init__(self, orientation: Qt.Orientation, parent: QWidget | None = None) -> None:
+        super().__init__(orientation, parent)
+        self._value_tween = HighRefreshTween(self, lambda value: self.setValue(round(value)))
+
     def wheelEvent(self, event) -> None:  # type: ignore[no-untyped-def]
         forward_wheel(self, event)
+
+    def mousePressEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if event.button() != Qt.MouseButton.LeftButton:
+            super().mousePressEvent(event)
+            return
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        handle = self.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider,
+            option,
+            QStyle.SubControl.SC_SliderHandle,
+            self,
+        )
+        if handle.contains(event.position().toPoint()):
+            self._value_tween.stop()
+            super().mousePressEvent(event)
+            return
+        span = max(1, self.width() - handle.width())
+        position = round(event.position().x() - handle.width() / 2)
+        target = QStyle.sliderValueFromPosition(
+            self.minimum(), self.maximum(), position, span, option.upsideDown
+        )
+        self._value_tween.start(self.value(), target, 145)
+        event.accept()
+
+
+class HoverButton(QPushButton):
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self._hover_strength = 0.0
+        self._hover_color = QColor("#4395f7")
+        self._hover_effect = QGraphicsDropShadowEffect(self)
+        self._hover_effect.setBlurRadius(20)
+        self._hover_effect.setOffset(0, 2)
+        self.setGraphicsEffect(self._hover_effect)
+        self._hover_tween = HighRefreshTween(self, self._set_hover_strength)
+        self._set_hover_strength(0.0)
+
+    def set_hover_color(self, color: str) -> None:
+        self._hover_color = QColor(color)
+        self._set_hover_strength(self._hover_strength)
+
+    def _set_hover_strength(self, strength: float) -> None:
+        self._hover_strength = strength
+        color = QColor(self._hover_color)
+        color.setAlpha(round(105 * strength))
+        self._hover_effect.setColor(color)
+
+    def enterEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        super().enterEvent(event)
+        if self.isEnabled():
+            self._hover_tween.start(self._hover_strength, 1.0, 120)
+
+    def leaveEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        super().leaveEvent(event)
+        self._hover_tween.start(self._hover_strength, 0.0, 170)
 
 
 class AnimatedMenu(QMenu):
@@ -446,7 +535,7 @@ class SegmentedControl(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(5)
         for label in values:
-            button = QPushButton(label, self)
+            button = HoverButton(label, self)
             button.setCheckable(True)
             button.setProperty("segment", True)
             button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -465,7 +554,7 @@ class SegmentedControl(QWidget):
             self._buttons[value].setChecked(True)
 
 
-class DropZone(QPushButton):
+class DropZone(HoverButton):
     files_dropped = Signal(list)
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -549,12 +638,8 @@ class FRUCApp(QMainWindow):
             QTimer.singleShot(150, self._start_capability_check)
 
         self.setWindowOpacity(0.0)
-        self.fade_animation = QPropertyAnimation(self, b"windowOpacity", self)
-        self.fade_animation.setDuration(240)
-        self.fade_animation.setStartValue(0.0)
-        self.fade_animation.setEndValue(1.0)
-        self.fade_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        QTimer.singleShot(0, self.fade_animation.start)
+        self.fade_animation = HighRefreshTween(self, self.setWindowOpacity)
+        QTimer.singleShot(0, lambda: self.fade_animation.start(0.0, 1.0, 240))
 
     def _build_ui(self) -> None:
         root = QWidget(self)
@@ -779,9 +864,9 @@ class FRUCApp(QMainWindow):
         self._hint(panel, "Detected libplacebo temporal mixers only")
         self._section(panel, "Blur amount")
         blur_row = QHBoxLayout()
-        self.blur_slider = ScrollSafeSlider(Qt.Orientation.Horizontal, self.settings_content)
+        self.blur_slider = SmoothSlider(Qt.Orientation.Horizontal, self.settings_content)
         self.blur_slider.setRange(25, 200)
-        self.blur_slider.setSingleStep(5)
+        self.blur_slider.setSingleStep(1)
         self.blur_slider.setValue(round(self.settings.blur_amount * 100))
         self.blur_slider.valueChanged.connect(self._blur_changed)
         self.blur_label = QLabel(f"{self.blur_slider.value()}%", self.settings_content)
@@ -798,9 +883,9 @@ class FRUCApp(QMainWindow):
         panel.addWidget(self.codec_combo)
         self._hint(panel, "Same QP control  •  H.264 is safest for video editors")
         qp_row = QHBoxLayout()
-        self.qp_slider = ScrollSafeSlider(Qt.Orientation.Horizontal, self.settings_content)
-        self.qp_slider.setRange(18, 40)
-        self.qp_slider.setValue(self.settings.qp)
+        self.qp_slider = SmoothSlider(Qt.Orientation.Horizontal, self.settings_content)
+        self.qp_slider.setRange(180, 400)
+        self.qp_slider.setValue(self.settings.qp * 10)
         self.qp_slider.valueChanged.connect(self._qp_changed)
         self.qp_label = QLabel(f"QP {self.settings.qp}", self.settings_content)
         self.qp_label.setObjectName("valueBadge")
@@ -866,7 +951,7 @@ class FRUCApp(QMainWindow):
         panel.addStretch(1)
 
     def _button(self, text: str, slot, standard_icon: QStyle.StandardPixmap | None = None, object_name: str = "", compact: bool = False) -> QPushButton:
-        button = QPushButton(text, self)
+        button = HoverButton(text, self)
         if object_name:
             button.setObjectName(object_name)
         if standard_icon is not None:
@@ -912,6 +997,12 @@ class FRUCApp(QMainWindow):
         self.clear_button.setIcon(line_icon("clear", self.colors["success"]))
         self.remove_button.setIconSize(QSize(17, 17))
         self.clear_button.setIconSize(QSize(17, 17))
+        for button in self.findChildren(HoverButton):
+            color = self.colors.get(
+                "danger" if button.objectName() == "dangerButton" else
+                "warning" if button.objectName() == "warningButton" else "accent"
+            )
+            button.set_hover_color(color)
         repolish(self.capability_label)
         for job in self.jobs.values():
             self._update_row(job)
@@ -1290,15 +1381,11 @@ class FRUCApp(QMainWindow):
         self._update_diagnostics()
 
     def _qp_changed(self, value: int) -> None:
-        self.qp_label.setText(f"QP {value}")
+        self.qp_label.setText(f"QP {(value + 5) // 10}")
         self._settings_changed()
 
     def _blur_changed(self, value: int) -> None:
-        snapped = round(value / 5) * 5
-        if snapped != value:
-            self.blur_slider.setValue(snapped)
-            return
-        self.blur_label.setText(f"{snapped}%")
+        self.blur_label.setText(f"{value}%")
         self._settings_changed()
 
     def _output_mode_changed(self, *_args) -> None:
@@ -1329,7 +1416,7 @@ class FRUCApp(QMainWindow):
             frame_mixer=MIXERS_BY_LABEL.get(self.mixer_combo.currentText(), "linear"),
             blur_amount=self.blur_slider.value() / 100,
             video_codec=CODECS_BY_LABEL.get(self.codec_combo.currentText(), "h264"),
-            qp=self.qp_slider.value(),
+            qp=(self.qp_slider.value() + 5) // 10,
             parallel_jobs=int(self.parallel_control.value()),
             auto_mp4=self.auto_mp4_check.isChecked(),
             keep_ts=self.keep_ts_check.isChecked(),

@@ -11,7 +11,7 @@ from PySide6.QtCore import QMimeData, QPoint, QPointF, Qt, QUrl
 from PySide6.QtGui import QWheelEvent
 from PySide6.QtWidgets import QApplication, QWidget
 
-from fruc_app.app import AnimatedComboBox, DropZone, FRUCApp, SmoothScrollArea
+from fruc_app.app import AnimatedComboBox, DropZone, FRUCApp, SmoothScrollArea, frame_interval_ms
 from fruc_app.models import JobStatus, RenderJob
 
 
@@ -58,7 +58,11 @@ class QtUiTests(unittest.TestCase):
         )
         QApplication.sendEvent(picker, wheel)
         self.assertEqual(picker.currentIndex(), 0)
-        self.assertEqual(scroll._scroll_animation.endValue(), 82)
+        self.assertEqual(scroll._scroll_tween.end_value, 82)
+
+    def test_animation_timer_adapts_to_display_refresh_rate(self) -> None:
+        expected = {60: 16, 75: 13, 120: 8, 144: 6, 165: 6, 240: 4, 360: 2, 540: 1}
+        self.assertEqual({rate: frame_interval_ms(rate) for rate in expected}, expected)
 
 
 if __name__ == "__main__":
