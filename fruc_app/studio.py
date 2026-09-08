@@ -112,6 +112,7 @@ class MotionArtwork(QWidget):
 class PresetButton(QPushButton):
     def __init__(self, label: str, samples: int, mixer: str, parent: QWidget) -> None:
         super().__init__(label, parent)
+        self.setObjectName("presetTile")
         self.samples, self.mixer = samples, mixer
         self.colors: dict[str, str] = {}
         self.strength = 0.0
@@ -122,6 +123,12 @@ class PresetButton(QPushButton):
         self.setToolTip(f"{samples}× sampling · {mixer.title()} mixer · 100% blur")
         self.setAccessibleName(f"{label} preset, {samples} times sampling, {mixer} mixer")
         self.tween = HighRefreshTween(self, self._hover)
+
+    def sizeHint(self) -> QSize:
+        return QSize(80, 77)
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(64, 77)
 
     def set_colors(self, colors: dict[str, str]) -> None:
         self.colors = colors

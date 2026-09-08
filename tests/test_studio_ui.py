@@ -17,12 +17,14 @@ from fruc_app.animation import HighRefreshTween
 from fruc_app.app import FRUCApp
 from fruc_app.ffmpeg import Capabilities
 from fruc_app.models import JobStatus, ProbeInfo, RenderJob, RenderSettings
+from tests.qt_support import load_test_fonts
 
 
 class StudioUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = QApplication.instance() or QApplication([])
+        load_test_fonts()
         cls.app.setStyle("Fusion")
 
     def setUp(self) -> None:
@@ -164,6 +166,9 @@ class StudioUiTests(unittest.TestCase):
             with self.subTest(widget=widget.text()):
                 bottom_right = widget.mapTo(self.window, QPoint(widget.width() - 1, widget.height() - 1))
                 self.assertTrue(self.window.rect().contains(bottom_right))
+        for button in self.window.preset_buttons.values():
+            self.assertGreaterEqual(button.height(), 77)
+        self.assertLessEqual(self.window.settings_content.width(), self.window.settings_scroll.viewport().width())
 
 
 if __name__ == "__main__":

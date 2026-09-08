@@ -20,6 +20,7 @@ from fruc_app.animation import HighRefreshTween
 from fruc_app.app import FRUCApp
 from fruc_app.ffmpeg import Capabilities
 from fruc_app.models import JobStatus, ProbeInfo, RenderJob, RenderSettings
+from tests.qt_support import load_test_fonts
 
 
 def main() -> None:
@@ -28,6 +29,7 @@ def main() -> None:
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     app = QApplication([])
+    load_test_fonts()
     app.setStyle("Fusion")
     with (
         patch("fruc_app.app.load_settings", return_value=RenderSettings()),

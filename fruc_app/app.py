@@ -344,6 +344,7 @@ def theme_stylesheet(c: dict[str, str]) -> str:
         QPushButton[segment="true"]:checked {{ color: {c['accent_text']}; }}
         QPushButton:focus, QToolButton:focus {{ border-color: {c['accent']}; }}
         QToolButton#motionButton:checked {{ color: {c['accent']}; background: {c['selection']}; }}
+        QPushButton#presetTile {{ min-height: 77px; max-height: 77px; padding: 0; }}
         QTreeWidget {{ border: none; background: transparent; padding: 0; alternate-background-color: transparent; }}
         QTreeWidget::item {{ padding: 0; min-height: 62px; }}
         QHeaderView::section {{ background: {c['card']}; font-size: 8pt; padding: 12px; }}
@@ -458,6 +459,12 @@ def forward_wheel(widget: QWidget, event) -> None:  # type: ignore[no-untyped-de
 
 
 class AnimatedComboBox(QComboBox):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.setMinimumContentsLength(10)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
     def showPopup(self) -> None:
         super().showPopup()
         animate_popup(self.view().window(), self)
@@ -1142,6 +1149,10 @@ class FRUCApp(QMainWindow):
         self.tree.viewport().update()
         for button in self.preset_buttons.values():
             button.set_colors(self.colors)
+        for frame in self.findChildren(QFrame):
+            effect = frame.graphicsEffect()
+            if isinstance(effect, QGraphicsDropShadowEffect):
+                effect.setColor(QColor(0, 0, 0, 40 if dark else 14))
         for button in self.findChildren(HoverButton):
             color = self.colors.get(
                 "danger" if button.objectName() == "dangerButton" else
