@@ -90,6 +90,8 @@ class MotionArtwork(QWidget):
                 p.drawPoint(x, y)
         p.save()
         p.translate(w * 0.52 + math.sin(self.phase) * 7, h * 0.47)
+        if h < 130:
+            p.scale(0.7, 0.7)
         p.rotate(-24)
         count = min(16, self.samples + 3)
         spacing = 8 + self.blur * 3
@@ -105,7 +107,8 @@ class MotionArtwork(QWidget):
         p.restore()
         p.setPen(QColor(c["muted"]))
         p.setFont(QFont("Segoe UI", 8, QFont.Weight.DemiBold))
-        p.drawText(QRectF(0, h - 26, w, 20), Qt.AlignmentFlag.AlignCenter, f"MOTION STUDY   /   {self.samples:02d}×")
+        if h >= 130:
+            p.drawText(QRectF(0, h - 26, w, 20), Qt.AlignmentFlag.AlignCenter, f"MOTION STUDY   /   {self.samples:02d}×")
         p.end()
 
 

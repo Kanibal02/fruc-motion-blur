@@ -37,6 +37,10 @@ The PySide6 interface keeps the console-free `.pyw` launcher while providing nat
 
 ## Studio interface
 
+![The native FRUC Motion Blur studio interface](docs/studio-ui.png)
+
+*Actual Qt UI capture with illustrative queue data.*
+
 - A violet and mint palette, illustrated motion trails, one-click look cards, and a queue with two-line clip details and distinct status badges.
 - Hover transitions, refresh-aware pickers and progress, and animated disclosure of the log and advanced settings.
 - **Motion on / off** in the header saves a reduced-motion preference. Decorative motion pauses during rendering and when the window is inactive, hidden, or minimized. The motion study is an illustration, not a preview of the output video.

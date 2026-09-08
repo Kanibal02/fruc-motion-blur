@@ -340,7 +340,7 @@ def theme_stylesheet(c: dict[str, str]) -> str:
         }}
         QPushButton#dropZone:hover, QPushButton#dropZone:focus {{ border: 1px solid {c['accent']}; }}
         QPushButton#dropZone[dragActive="true"] {{ border: 2px dashed {c['cyan']}; background: {c['selection']}; }}
-        QPushButton#dropZone[compact="true"] {{ min-height: 128px; }}
+        QPushButton#dropZone[compact="true"] {{ min-height: 116px; }}
         QPushButton#dropZone[compact="true"] QLabel#heroTitle {{ font-size: 18pt; }}
         QPushButton#primaryButton {{ color: {c['accent_text']}; min-height: 42px; font-size: 11pt; }}
         QPushButton#primaryButton:disabled {{ color: {c['muted']}; background: {c['raised']}; border-color: {c['border']}; }}
@@ -633,7 +633,7 @@ class DropZone(HoverButton):
             return
         self.setProperty("compact", compact)
         self.findChild(QLabel, "eyebrow").setVisible(not compact)
-        self.artwork.setMinimumHeight(102 if compact else 148)
+        self.artwork.setMinimumHeight(90 if compact else 148)
         repolish(self)
 
     @staticmethod
