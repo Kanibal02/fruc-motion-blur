@@ -96,7 +96,7 @@ python -m unittest discover -v
 
 Tests cover rational FPS handling, exact filter construction, Vulkan argument order, audio fallback, safe output naming, progress parsing, and settings persistence.
 
-Regression tests also cover malformed settings, cover-art and duration metadata, remux recovery, process cleanup, stale GPU checks, preset clicks, reduced motion, minimum window size, and queue transitions. GitHub Actions runs the suite on Windows with Python 3.10 / Qt 6.8 at 100% scaling and Python 3.12 / current supported Qt at 150% scaling, then uploads actual Qt screenshots of empty, rendering, light, compact, and advanced views. These captures use illustrative queue fixtures and do not validate GPU rendering.
+Regression tests also cover malformed settings, cover-art and duration metadata, remux recovery, process cleanup, stale GPU checks, preset clicks, reduced motion, minimum window size, and queue transitions. GitHub Actions runs the suite on Windows with Python 3.10 / Qt 6.8 at 100% scaling and Python 3.12 / current supported Qt at 150% scaling, then uploads actual Qt screenshots of empty, ready, rendering, light, compact, and advanced views. These captures use illustrative queue fixtures and do not validate GPU rendering.
 
 To reproduce the screenshots locally without a GPU:
 

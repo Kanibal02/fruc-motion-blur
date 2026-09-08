@@ -238,6 +238,7 @@ def theme_stylesheet(c: dict[str, str]) -> str:
         QComboBox:focus, QLineEdit:focus {{ border: 1px solid {c['accent']}; }}
         QComboBox:disabled, QLineEdit:disabled {{ color: {c['muted']}; background: {c['panel']}; }}
         QComboBox::drop-down {{ border: none; width: 28px; }}
+        QComboBox::down-arrow {{ image: none; }}
         QComboBox QAbstractItemView {{
             background: {c['card']}; border: 1px solid {c['border']}; border-radius: 8px;
             selection-background-color: {c['selection']}; outline: 0; padding: 4px;
@@ -339,6 +340,8 @@ def theme_stylesheet(c: dict[str, str]) -> str:
         }}
         QPushButton#dropZone:hover, QPushButton#dropZone:focus {{ border: 1px solid {c['accent']}; }}
         QPushButton#dropZone[dragActive="true"] {{ border: 2px dashed {c['cyan']}; background: {c['selection']}; }}
+        QPushButton#dropZone[compact="true"] {{ min-height: 128px; }}
+        QPushButton#dropZone[compact="true"] QLabel#heroTitle {{ font-size: 18pt; }}
         QPushButton#primaryButton {{ color: {c['accent_text']}; min-height: 42px; font-size: 11pt; }}
         QPushButton#primaryButton:disabled {{ color: {c['muted']}; background: {c['raised']}; border-color: {c['border']}; }}
         QPushButton[segment="true"]:checked {{ color: {c['accent_text']}; }}
@@ -464,6 +467,17 @@ class AnimatedComboBox(QComboBox):
         self.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.setMinimumContentsLength(10)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        group = QPalette.ColorGroup.Active if self.isEnabled() else QPalette.ColorGroup.Disabled
+        painter.setPen(QPen(self.palette().color(group, QPalette.ColorRole.Text), 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        x, y = self.width() - 18, self.height() // 2
+        painter.drawLine(x - 4, y - 2, x, y + 2)
+        painter.drawLine(x, y + 2, x + 4, y - 2)
+        painter.end()
 
     def showPopup(self) -> None:
         super().showPopup()
@@ -591,6 +605,7 @@ class DropZone(HoverButton):
         self.setAcceptDrops(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setProperty("dragActive", False)
+        self.setProperty("compact", False)
         self.setAccessibleName("Add videos. Drop video files or a folder, or press to browse.")
         layout = QHBoxLayout(self)
         layout.setContentsMargins(24, 14, 8, 14)
@@ -602,7 +617,7 @@ class DropZone(HoverButton):
             ("FRAME RATE UP-CONVERSION", "eyebrow"),
             ("Make every frame flow.", "heroTitle"),
             ("Drop your videos here to get started.", "heroSubtitle"),
-            ("＋  Browse files     /     MP4 · MOV · MKV + more", "heroAction"),
+            ("+  Browse files     /     MP4 · MOV · MKV + more", "heroAction"),
         ):
             label = QLabel(text, self)
             label.setObjectName(name)
@@ -612,6 +627,14 @@ class DropZone(HoverButton):
         layout.addLayout(copy, 1)
         self.artwork = MotionArtwork(self)
         layout.addWidget(self.artwork)
+
+    def set_compact(self, compact: bool) -> None:
+        if self.property("compact") == compact:
+            return
+        self.setProperty("compact", compact)
+        self.findChild(QLabel, "eyebrow").setVisible(not compact)
+        self.artwork.setMinimumHeight(102 if compact else 148)
+        repolish(self)
 
     @staticmethod
     def local_paths(mime: QMimeData) -> list[Path]:
@@ -1188,6 +1211,11 @@ class FRUCApp(QMainWindow):
         super().changeEvent(event)
         if event.type() in {QEvent.Type.ActivationChange, QEvent.Type.WindowStateChange} and hasattr(self, "drop_zone"):
             self.drop_zone.artwork.sync_activity()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "drop_zone"):
+            self.drop_zone.set_compact(self.height() < 800)
 
     def _set_capability(self, text: str, state: str) -> None:
         self.capability_label.setText(f"●  {text}")

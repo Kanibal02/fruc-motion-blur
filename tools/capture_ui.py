@@ -81,6 +81,17 @@ def main() -> None:
         capture("studio-light-rendering.png")
         window._change_appearance("Dark")
         window._set_rendering_ui(False)
+        active.status = JobStatus.WAITING
+        active.progress = active.stage_progress = 0
+        active.render_multiplier = None
+        window._update_row(active)
+        window.active_job_ids = []
+        window.stage_label.setText("Ready when you are")
+        window.progress_label.setText("Choose a preset, then start your queue.")
+        window.progress_percent.setText("0%")
+        window.current_progress.set_fraction(0, animate=False)
+        window._update_overall()
+        capture("studio-dark-ready.png")
         window.resize(1060, 700)
         capture("studio-compact.png")
         window.resize(1320, 880)

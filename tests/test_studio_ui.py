@@ -158,6 +158,7 @@ class StudioUiTests(unittest.TestCase):
         self.assertEqual(self.window.queue_stack.currentIndex(), 0)
 
     def test_minimum_window_keeps_primary_controls_on_screen(self) -> None:
+        self.add_job()
         self.window.resize(1060, 700)
         self.app.processEvents()
         self.assertEqual(self.window.width(), 1060)
@@ -169,6 +170,7 @@ class StudioUiTests(unittest.TestCase):
         for button in self.window.preset_buttons.values():
             self.assertGreaterEqual(button.height(), 77)
         self.assertLessEqual(self.window.settings_content.width(), self.window.settings_scroll.viewport().width())
+        self.assertGreaterEqual(self.window.tree.viewport().height(), 66)
 
 
 if __name__ == "__main__":
