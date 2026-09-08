@@ -4,6 +4,7 @@ import json
 import subprocess
 from dataclasses import dataclass
 from fractions import Fraction
+from math import isfinite
 from pathlib import Path
 from typing import Iterable
 
@@ -98,21 +99,37 @@ def probe_media(ffprobe: Path, input_path: Path) -> ProbeInfo:
     try:
         data = json.loads(result.stdout)
         streams = data.get("streams", [])
-        video = next(stream for stream in streams if stream.get("codec_type") == "video")
+        video = next(
+            stream for stream in streams
+            if stream.get("codec_type") == "video"
+            and not stream.get("disposition", {}).get("attached_pic")
+        )
         audio = next((stream for stream in streams if stream.get("codec_type") == "audio"), None)
-        duration = float(video.get("duration") or data.get("format", {}).get("duration") or 0)
-        if duration <= 0:
+        duration = 0.0
+        for candidate in (video.get("duration"), data.get("format", {}).get("duration")):
+            try:
+                value = float(candidate)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if isfinite(value) and value > 0:
+                duration = value
+                break
+        if not duration:
             raise ValueError("duration is unavailable")
+        width, height = int(video["width"]), int(video["height"])
+        if width <= 0 or height <= 0:
+            raise ValueError("invalid video dimensions")
         return ProbeInfo(
-            width=int(video["width"]),
-            height=int(video["height"]),
+            width=width,
+            height=height,
             fps=select_fps(video.get("avg_frame_rate"), video.get("r_frame_rate")),
             duration=duration,
             codec=str(video.get("codec_name") or "unknown"),
             audio_codec=str(audio.get("codec_name")) if audio else None,
             pixel_format=video.get("pix_fmt"),
+            video_stream_index=int(video["index"]) if "index" in video else None,
         )
-    except (KeyError, StopIteration, TypeError, ValueError) as exc:
+    except (KeyError, StopIteration, TypeError, ValueError, OverflowError) as exc:
         raise RuntimeError(f"Unsupported or incomplete video metadata: {exc}") from exc
 
 
@@ -204,7 +221,7 @@ def filter_chain(probe: ProbeInfo, settings: RenderSettings) -> str:
     paired_rate = f"{paired_fps.numerator}/{paired_fps.denominator}"
     paired_pts = f"N/(({paired_rate})*TB)"
     return (
-        f"[0:v]{fruc},split=2[even0][odd0];"
+        f"[0:{probe.video_stream_index if probe.video_stream_index is not None else 'v:0'}]{fruc},split=2[even0][odd0];"
         f"[even0]framestep=2,setpts={paired_pts}[even];"
         f"[odd0]trim=start_frame=1,framestep=2,setpts={paired_pts}[odd];"
         f"[even][odd]blend_vulkan=all_mode=average[paired];"
@@ -239,7 +256,8 @@ def build_render_command(
     encoder = VIDEO_ENCODERS[settings.video_codec]
     _, container = VIDEO_CONTAINERS[settings.video_codec]
     graph = filter_chain(probe, settings)
-    video_filter = ["-filter_complex", graph, "-map", "[outv]"] if settings.multiplier >= 12 else ["-vf", graph, "-map", "0:v:0"]
+    video_stream = f"0:{probe.video_stream_index}" if probe.video_stream_index is not None else "0:v:0"
+    video_filter = ["-filter_complex", graph, "-map", "[outv]"] if settings.multiplier >= 12 else ["-vf", graph, "-map", video_stream]
     return [
         str(ffmpeg), "-y", "-benchmark",
         "-init_hw_device", f"vulkan=vk:{settings.device_index}",
