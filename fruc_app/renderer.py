@@ -96,7 +96,7 @@ class Renderer:
             self._status(job, JobStatus.CANCELLED, **values)
         except Exception as exc:  # Worker boundary: report and continue with the queue.
             job.error = str(exc)
-            self._status(job, JobStatus.FAILED, error=job.error)
+            self._status(job, JobStatus.FAILED, error=job.error, output_path=job.output_path)
             self._emit("log", level="ERROR", message=f"{job.input_path.name}: {exc}")
         finally:
             with self._state_lock:
@@ -108,6 +108,7 @@ class Renderer:
             raise RuntimeError("Input file no longer exists")
 
         self._status(job, JobStatus.PROBING)
+        job.render_multiplier = settings.multiplier
         job.probe = probe_media(self.ffprobe, job.input_path)
         self._emit("probed", job_id=job.id, probe=job.probe)
         if self._is_cancelled(job.id):
@@ -117,14 +118,17 @@ class Renderer:
             intermediate_path, mp4_path = output_paths(job.input_path, job.probe, settings)
             intermediate_path.parent.mkdir(parents=True, exist_ok=True)
             intermediate_path.touch(exist_ok=False)
-        render_command = build_render_command(
-            self.ffmpeg, job.input_path, intermediate_path, job.probe, settings
-        )
-        filter_option = "-filter_complex" if "-filter_complex" in render_command else "-vf"
-        self._emit("command", job_id=job.id, command=command_text(render_command), filter=render_command[render_command.index(filter_option) + 1])
-        self._status(job, JobStatus.RENDERING)
-
-        return_code = self._run_process(render_command, job, "Rendering")
+        try:
+            render_command = build_render_command(
+                self.ffmpeg, job.input_path, intermediate_path, job.probe, settings
+            )
+            filter_option = "-filter_complex" if "-filter_complex" in render_command else "-vf"
+            self._emit("command", job_id=job.id, command=command_text(render_command), filter=render_command[render_command.index(filter_option) + 1])
+            self._status(job, JobStatus.RENDERING)
+            return_code = self._run_process(render_command, job, "Rendering")
+        except Exception:
+            self._delete_if_present(intermediate_path)
+            raise
         cancelled = self._is_cancelled(job.id)
         if return_code and not cancelled:
             self._delete_if_present(intermediate_path)
@@ -136,14 +140,22 @@ class Renderer:
             raise RuntimeError("FFmpeg completed without producing an output file")
 
         output = intermediate_path
+        # Make the usable render available even if launching or completing remux fails.
+        job.output_path = intermediate_path
         if mp4_path and not (cancelled and self._stop_queue.is_set()):
             remux_command = build_remux_command(self.ffmpeg, intermediate_path, mp4_path)
             self._emit("log", level="INFO", message=f"Remux command: {command_text(remux_command)}")
             self._status(job, JobStatus.REMUXING)
             cancelled_before_remux = cancelled
-            return_code = self._run_process(
-                remux_command, job, "Remuxing", honor_cancel=not cancelled
-            )
+            try:
+                return_code = self._run_process(
+                    remux_command, job, "Remuxing", honor_cancel=not cancelled
+                )
+            except Exception as exc:
+                self._delete_if_present(mp4_path)
+                raise RuntimeError(
+                    f"MP4 remux failed; valid intermediate kept at {intermediate_path}: {exc}"
+                ) from exc
             cancelled = self._is_cancelled(job.id)
             if cancelled and not cancelled_before_remux:
                 self._delete_if_present(mp4_path)
@@ -190,15 +202,31 @@ class Renderer:
         )
         with self._state_lock:
             self._processes[job.id] = process
-        if honor_cancel and self._is_cancelled(job.id):
-            self._stop_process(process)
         stderr_thread = threading.Thread(target=self._read_stderr, args=(process,), daemon=True)
         stderr_thread.start()
+        try:
+            if self._stop_queue.is_set() or (honor_cancel and self._is_cancelled(job.id)):
+                self._stop_process(process)
+            self._read_progress(process, job, stage, honor_cancel)
+            return process.wait()
+        finally:
+            if process.poll() is None:
+                self._stop_process(process)
+            stderr_thread.join(timeout=2)
+            with self._state_lock:
+                if self._processes.get(job.id) is process:
+                    del self._processes[job.id]
+            for pipe in (process.stdin, process.stdout, process.stderr):
+                if pipe:
+                    pipe.close()
 
+    def _read_progress(
+        self, process: subprocess.Popen[str], job: RenderJob, stage: str, honor_cancel: bool
+    ) -> None:
         values: dict[str, str] = {}
         assert process.stdout is not None
         for raw in process.stdout:
-            if honor_cancel and self._is_cancelled(job.id):
+            if self._stop_queue.is_set() or (honor_cancel and self._is_cancelled(job.id)):
                 self._stop_process(process)
                 break
             line = raw.strip()
@@ -223,13 +251,6 @@ class Renderer:
                 )
                 values.clear()
 
-        return_code = process.wait()
-        stderr_thread.join(timeout=1)
-        with self._state_lock:
-            if self._processes.get(job.id) is process:
-                del self._processes[job.id]
-        return return_code
-
     def _is_cancelled(self, job_id: str) -> bool:
         with self._state_lock:
             return job_id in self._cancelled_jobs
@@ -250,7 +271,7 @@ class Renderer:
                 process.stdin.flush()
             process.wait(timeout=2)
             return
-        except (OSError, subprocess.TimeoutExpired):
+        except (OSError, ValueError, subprocess.TimeoutExpired):
             pass
         if process.poll() is not None:
             return

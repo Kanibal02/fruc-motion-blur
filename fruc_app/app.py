@@ -7,11 +7,11 @@ import sys
 import threading
 import time
 import webbrowser
-from collections.abc import Callable
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from PySide6.QtCore import (
+    QEvent,
     QMimeData,
     QPoint,
     QRectF,
@@ -56,6 +56,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSlider,
+    QStackedWidget,
     QStyle,
     QStyleOptionSlider,
     QToolButton,
@@ -79,6 +80,8 @@ from .models import JobStatus, RenderJob, RenderSettings, format_time
 from .paths import LOG_DIR, ensure_app_dirs, find_binary
 from .renderer import Renderer
 from .settings import load_settings, save_settings
+from .animation import HighRefreshTween, frame_interval_ms, motion_enabled, reveal
+from .studio import DETAIL_ROLE, PROGRESS_ROLE, STATUS_ROLE, MotionArtwork, PresetButton, QueueDelegate
 
 
 PRESETS = {
@@ -123,13 +126,13 @@ def app_icon() -> QIcon:
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setPen(Qt.PenStyle.NoPen)
-    painter.setBrush(QColor("#4395f7"))
-    painter.drawRoundedRect(3, 3, 58, 58, 15, 15)
-    painter.setBrush(QColor("#0a1019"))
-    painter.drawRoundedRect(13, 13, 38, 38, 9, 9)
-    painter.setPen(QColor("#f7fbff"))
-    painter.setFont(QFont("Segoe UI", 22, QFont.Weight.Bold))
-    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "F")
+    painter.setBrush(QColor("#252039"))
+    painter.drawRoundedRect(3, 3, 58, 58, 16, 16)
+    painter.translate(32, 32)
+    painter.rotate(20)
+    for x, color in ((-16, "#63548f"), (-5, "#9b8aff"), (6, "#76e4d5")):
+        painter.setBrush(QColor(color))
+        painter.drawRoundedRect(x, -17, 8, 34, 4, 4)
     painter.end()
     return QIcon(pixmap)
 
@@ -150,12 +153,33 @@ def line_icon(kind: str, color: str) -> QIcon:
         painter.drawRoundedRect(QRectF(10, 11, 12, 14), 2, 2)
         painter.drawLine(14, 14, 14, 22)
         painter.drawLine(18, 14, 18, 22)
-    else:
+    elif kind == "clear":
         painter.drawLine(6, 9, 15, 9)
         painter.drawLine(6, 16, 15, 16)
         painter.drawLine(6, 23, 15, 23)
         painter.drawLine(18, 19, 21, 22)
         painter.drawLine(21, 22, 27, 13)
+    elif kind == "folder":
+        painter.drawRoundedRect(QRectF(5, 10, 22, 16), 3, 3)
+        painter.drawLine(6, 10, 6, 6)
+        painter.drawLine(6, 6, 14, 6)
+        painter.drawLine(14, 6, 18, 10)
+    elif kind == "add":
+        painter.drawLine(16, 7, 16, 25)
+        painter.drawLine(7, 16, 25, 16)
+    elif kind == "play":
+        painter.drawLine(11, 7, 25, 16)
+        painter.drawLine(25, 16, 11, 25)
+        painter.drawLine(11, 25, 11, 7)
+    elif kind == "stop":
+        painter.drawRoundedRect(QRectF(8, 8, 16, 16), 3, 3)
+    elif kind == "cancel":
+        painter.drawLine(9, 9, 23, 23)
+        painter.drawLine(23, 9, 9, 23)
+    elif kind == "refresh":
+        painter.drawArc(QRectF(7, 7, 18, 18), 35 * 16, 290 * 16)
+        painter.drawLine(25, 6, 25, 13)
+        painter.drawLine(25, 13, 18, 13)
     painter.end()
     return QIcon(pixmap)
 
@@ -163,24 +187,25 @@ def line_icon(kind: str, color: str) -> QIcon:
 def theme_colors(dark: bool) -> dict[str, str]:
     if dark:
         return {
-            "bg": "#080c12", "panel": "#0c121b", "card": "#111925",
-            "raised": "#162131", "field": "#0b111a", "hover": "#1b293c",
-            "border": "#26354a", "text": "#f4f7fb", "muted": "#8998ad",
-            "accent": "#4395f7", "accent_hover": "#62a7fa", "selection": "#214f80",
-            "track": "#263247", "success": "#45d58a", "warning": "#e1a14d",
-            "danger": "#ee6474",
+            "bg": "#0b0d14", "panel": "#10131d", "card": "#141824",
+            "raised": "#1c2131", "field": "#10141f", "hover": "#242a3e",
+            "border": "#2b3145", "text": "#f0f1f8", "muted": "#9ba4bd",
+            "accent": "#a394ff", "accent_hover": "#b5a9ff", "selection": "#2d2949",
+            "track": "#2a3045", "success": "#6cdeb0", "warning": "#edbb78",
+            "danger": "#ff899d", "cyan": "#76e4d5", "accent_text": "#161128",
         }
     return {
         "bg": "#edf2f8", "panel": "#f4f7fb", "card": "#ffffff",
         "raised": "#f4f7fb", "field": "#f7f9fc", "hover": "#e7eef8",
         "border": "#d2dce8", "text": "#172033", "muted": "#65758b",
-        "accent": "#287bdc", "accent_hover": "#1769c6", "selection": "#d8eaff",
+        "accent": "#6746cc", "accent_hover": "#5635ba", "selection": "#e9e2ff",
         "track": "#d8e1ec", "success": "#168651", "warning": "#ad681c",
-        "danger": "#c63d50",
+        "danger": "#c63d50", "cyan": "#15776d", "accent_text": "#ffffff",
     }
 
 
 def theme_stylesheet(c: dict[str, str]) -> str:
+    check_icon = (Path(__file__).parent / "resources" / "check.svg").as_posix()
     return f"""
         * {{ font-family: "Segoe UI"; font-size: 10pt; color: {c['text']}; }}
         QWidget#root {{ background: {c['bg']}; }}
@@ -213,6 +238,7 @@ def theme_stylesheet(c: dict[str, str]) -> str:
         QComboBox:focus, QLineEdit:focus {{ border: 1px solid {c['accent']}; }}
         QComboBox:disabled, QLineEdit:disabled {{ color: {c['muted']}; background: {c['panel']}; }}
         QComboBox::drop-down {{ border: none; width: 28px; }}
+        QComboBox::down-arrow {{ image: none; }}
         QComboBox QAbstractItemView {{
             background: {c['card']}; border: 1px solid {c['border']}; border-radius: 8px;
             selection-background-color: {c['selection']}; outline: 0; padding: 4px;
@@ -294,6 +320,44 @@ def theme_stylesheet(c: dict[str, str]) -> str:
         }}
         QScrollBar::handle:vertical:hover {{ background: {c['muted']}; }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+        QLabel {{ background: transparent; }}
+        QLabel#brandTitle {{ font-size: 16pt; font-weight: 700; }}
+        QLabel#brandSubtitle {{ font-size: 9pt; }}
+        QLabel#eyebrow {{ font-size: 8pt; font-weight: 700; color: {c['accent']}; }}
+        QLabel#heroTitle {{ font-size: 21pt; font-weight: 700; color: {c['text']}; }}
+        QLabel#heroSubtitle {{ font-size: 10pt; color: {c['muted']}; }}
+        QLabel#heroAction {{ font-size: 9pt; color: {c['accent']}; padding-top: 8px; }}
+        QLabel#emptyTitle {{ font-size: 15pt; font-weight: 600; }}
+        QLabel#queueCount {{ color: {c['muted']}; font-size: 9pt; }}
+        QLabel#progressPercent {{ font-size: 22pt; font-weight: 600; color: {c['accent']}; }}
+        QLabel#emptyMark {{ color: {c['accent']}; font-size: 30pt; }}
+        QFrame#card, QFrame#settingsCard {{ border-radius: 16px; }}
+        QPushButton#dropZone {{
+            min-height: 172px;
+            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {c['card']}, stop:1 {c['raised']});
+            border: 1px solid {c['border']}; border-radius: 16px;
+            padding: 0;
+        }}
+        QPushButton#dropZone:hover, QPushButton#dropZone:focus {{ border: 1px solid {c['accent']}; }}
+        QPushButton#dropZone[dragActive="true"] {{ border: 2px dashed {c['cyan']}; background: {c['selection']}; }}
+        QPushButton#dropZone[compact="true"] {{ min-height: 116px; }}
+        QPushButton#dropZone[compact="true"] QLabel#heroTitle {{ font-size: 18pt; }}
+        QPushButton#primaryButton {{ color: {c['accent_text']}; min-height: 42px; font-size: 11pt; }}
+        QPushButton#primaryButton:disabled {{ color: {c['muted']}; background: {c['raised']}; border-color: {c['border']}; }}
+        QPushButton[segment="true"]:checked {{ color: {c['accent_text']}; }}
+        QPushButton:focus, QToolButton:focus {{ border-color: {c['accent']}; }}
+        QToolButton#motionButton:checked {{ color: {c['accent']}; background: {c['selection']}; }}
+        QPushButton#presetTile {{ min-height: 77px; max-height: 77px; padding: 0; }}
+        QTreeWidget {{ border: none; background: transparent; padding: 0; alternate-background-color: transparent; }}
+        QTreeWidget::item {{ padding: 0; min-height: 62px; }}
+        QHeaderView::section {{ background: {c['card']}; font-size: 8pt; padding: 12px; }}
+        QStackedWidget#queueStack {{ background: transparent; }}
+        QProgressBar {{ min-height: 5px; max-height: 5px; border-radius: 2px; }}
+        QProgressBar::chunk {{ border-radius: 2px; }}
+        QProgressBar#overallProgress::chunk {{ background: {c['cyan']}; }}
+        QCheckBox::indicator:checked {{ image: url("{check_icon}"); background: #6746cc; border-color: #6746cc; }}
+        QCheckBox:focus {{ color: {c['accent']}; }}
+        QToolButton#logToggle, QToolButton#advancedToggle {{ background: transparent; text-align: left; color: {c['muted']}; border: none; }}
     """
 
 
@@ -331,53 +395,14 @@ class SmoothProgressBar(QProgressBar):
         self.animation.start(self.value(), target, 180)
 
 
-def frame_interval_ms(refresh_rate: float) -> int:
-    refresh_rate = refresh_rate if refresh_rate > 0 else 60.0
-    return max(1, int(1000 / refresh_rate))
-
-
-class HighRefreshTween:
-    def __init__(self, owner: QWidget, update: Callable[[float], None]) -> None:
-        self._owner = owner
-        self._update = update
-        self._timer = QTimer(owner)
-        self._timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self._timer.timeout.connect(self._tick)
-        self._start_value = 0.0
-        self.end_value = 0.0
-        self._duration = 0.0
-        self._started = 0.0
-
-    @property
-    def running(self) -> bool:
-        return self._timer.isActive()
-
-    def start(self, start_value: float, end_value: float, duration_ms: int) -> None:
-        screen = self._owner.screen()
-        self._timer.setInterval(frame_interval_ms(screen.refreshRate() if screen else 60.0))
-        self._start_value = float(start_value)
-        self.end_value = float(end_value)
-        self._duration = max(0.001, duration_ms / 1000)
-        self._started = time.perf_counter()
-        self._timer.start()
-        self._tick()
-
-    def stop(self) -> None:
-        self._timer.stop()
-
-    def _tick(self) -> None:
-        progress = min(1.0, (time.perf_counter() - self._started) / self._duration)
-        eased = 1 - (1 - progress) ** 3
-        self._update(self._start_value + (self.end_value - self._start_value) * eased)
-        if progress >= 1:
-            self._timer.stop()
-            self._update(self.end_value)
-
-
 def animate_popup(popup: QWidget, owner: QWidget) -> None:
     previous = getattr(owner, "_popup_animation", None)
     if previous:
-        previous.stop()
+        previous.dispose()
+        owner._popup_animation = None
+    if not motion_enabled():
+        popup.setWindowOpacity(1.0)
+        return
     final_position = popup.pos()
     start_position = final_position + QPoint(0, -7)
     popup.setWindowOpacity(0.0)
@@ -437,6 +462,23 @@ def forward_wheel(widget: QWidget, event) -> None:  # type: ignore[no-untyped-de
 
 
 class AnimatedComboBox(QComboBox):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.setMinimumContentsLength(10)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        group = QPalette.ColorGroup.Active if self.isEnabled() else QPalette.ColorGroup.Disabled
+        painter.setPen(QPen(self.palette().color(group, QPalette.ColorRole.Text), 1.5, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        x, y = self.width() - 18, self.height() // 2
+        painter.drawLine(x - 4, y - 2, x, y + 2)
+        painter.drawLine(x, y + 2, x + 4, y - 2)
+        painter.end()
+
     def showPopup(self) -> None:
         super().showPopup()
         animate_popup(self.view().window(), self)
@@ -444,7 +486,7 @@ class AnimatedComboBox(QComboBox):
     def hidePopup(self) -> None:
         animation = getattr(self, "_popup_animation", None)
         if animation:
-            animation.stop()
+            animation.finish()
         self.view().window().setWindowOpacity(1.0)
         super().hidePopup()
 
@@ -558,11 +600,41 @@ class DropZone(HoverButton):
     files_dropped = Signal(list)
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__("＋  Drop video files here\n     or click to browse", parent)
+        super().__init__("", parent)
         self.setObjectName("dropZone")
         self.setAcceptDrops(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setProperty("dragActive", False)
+        self.setProperty("compact", False)
+        self.setAccessibleName("Add videos. Drop video files or a folder, or press to browse.")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(24, 14, 8, 14)
+        layout.setSpacing(4)
+        copy = QVBoxLayout()
+        copy.setSpacing(5)
+        copy.addStretch()
+        for text, name in (
+            ("FRAME RATE UP-CONVERSION", "eyebrow"),
+            ("Make every frame flow.", "heroTitle"),
+            ("Drop your videos here to get started.", "heroSubtitle"),
+            ("+  Browse files     /     MP4 · MOV · MKV + more", "heroAction"),
+        ):
+            label = QLabel(text, self)
+            label.setObjectName(name)
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            copy.addWidget(label)
+        copy.addStretch()
+        layout.addLayout(copy, 1)
+        self.artwork = MotionArtwork(self)
+        layout.addWidget(self.artwork)
+
+    def set_compact(self, compact: bool) -> None:
+        if self.property("compact") == compact:
+            return
+        self.setProperty("compact", compact)
+        self.findChild(QLabel, "eyebrow").setVisible(not compact)
+        self.artwork.setMinimumHeight(90 if compact else 148)
+        repolish(self)
 
     @staticmethod
     def local_paths(mime: QMimeData) -> list[Path]:
@@ -617,17 +689,24 @@ class FRUCApp(QMainWindow):
         self._force_close = False
         self._close_deadline = 0.0
         self._applying_preset = False
+        self._capability_generation = 0
+        self._rendering = False
+        self.reduced_motion = self.settings.reduced_motion
+        QApplication.instance().setProperty("reducedMotion", self.reduced_motion)
         self.advanced_visible = False
         self.log_visible = False
 
         self.setWindowTitle("FRUC Motion Blur")
         self.setWindowIcon(app_icon())
-        self.resize(1280, 820)
+        self.resize(1320, 880)
         self.setMinimumSize(1060, 700)
         self._build_ui()
         self._apply_theme()
         self._toggle_advanced(self.settings.advanced_open)
         self._sync_output_controls()
+        self._sync_look()
+        self._refresh_queue_summary()
+        QApplication.instance().styleHints().colorSchemeChanged.connect(self._system_theme_changed)
         self._append_log("INFO", "Application started")
 
         self.event_timer = QTimer(self)
@@ -651,7 +730,7 @@ class FRUCApp(QMainWindow):
 
         header = QFrame(root)
         header.setObjectName("appHeader")
-        header.setFixedHeight(76)
+        header.setFixedHeight(82)
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(22, 12, 22, 12)
         header_layout.setSpacing(12)
@@ -662,7 +741,7 @@ class FRUCApp(QMainWindow):
         brand.setSpacing(0)
         title = QLabel("FRUC Motion Blur", header)
         title.setObjectName("brandTitle")
-        subtitle = QLabel("Vulkan optical flow  •  temporal motion mixing", header)
+        subtitle = QLabel("MOTION STUDIO  /  Vulkan optical flow", header)
         subtitle.setObjectName("brandSubtitle")
         brand.addWidget(title)
         brand.addWidget(subtitle)
@@ -672,6 +751,17 @@ class FRUCApp(QMainWindow):
         self.capability_label.setObjectName("statusBadge")
         self.capability_label.setProperty("state", "warning")
         header_layout.addWidget(self.capability_label)
+
+        self.motion_button = QToolButton(header)
+        self.motion_button.setObjectName("motionButton")
+        self.motion_button.setCheckable(True)
+        self.motion_button.setChecked(not self.reduced_motion)
+        self.motion_button.setText("Motion on" if not self.reduced_motion else "Motion off")
+        self.motion_button.setToolTip("Toggle interface animation (saved across launches)")
+        self.motion_button.setAccessibleName("Animate interface")
+        self.motion_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.motion_button.toggled.connect(self._change_motion)
+        header_layout.addWidget(self.motion_button)
 
         self.appearance_button = QToolButton(header)
         self.appearance_button.setObjectName("themeButton")
@@ -694,33 +784,35 @@ class FRUCApp(QMainWindow):
         page.addWidget(header)
 
         body = QHBoxLayout()
-        body.setContentsMargins(20, 16, 20, 20)
-        body.setSpacing(16)
+        body.setContentsMargins(24, 20, 24, 18)
+        body.setSpacing(20)
         page.addLayout(body, 1)
         left = QWidget(root)
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(10)
+        left_layout.setSpacing(14)
         body.addWidget(left, 1)
 
         self.drop_zone = DropZone(left)
         self.drop_zone.clicked.connect(self._pick_files)
         self.drop_zone.files_dropped.connect(self._add_paths)
         left_layout.addWidget(self.drop_zone)
-        self.selection_label = QLabel("No file selected", left)
+        self.selection_label = QLabel("Select a clip to see its source details", left)
         self.selection_label.setObjectName("muted")
         self.selection_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        left_layout.addWidget(self.selection_label)
 
         queue_card = make_card(left)
         queue_layout = QVBoxLayout(queue_card)
-        queue_layout.setContentsMargins(12, 11, 12, 12)
-        queue_layout.setSpacing(8)
+        queue_layout.setContentsMargins(14, 13, 14, 10)
+        queue_layout.setSpacing(6)
         toolbar = QHBoxLayout()
         toolbar.setSpacing(6)
         queue_title = QLabel("Render queue", queue_card)
         queue_title.setObjectName("cardTitle")
         toolbar.addWidget(queue_title)
+        self.queue_count = QLabel("0 clips", queue_card)
+        self.queue_count.setObjectName("queueCount")
+        toolbar.addWidget(self.queue_count)
         toolbar.addStretch(1)
         self.rerender_button = self._button("Render again", self._rerender_selected, QStyle.StandardPixmap.SP_BrowserReload, compact=True)
         self.rerender_button.setToolTip("Render the selected finished file again with the current settings")
@@ -728,45 +820,86 @@ class FRUCApp(QMainWindow):
         self.add_button = self._button("Add files", self._pick_files, QStyle.StandardPixmap.SP_DialogOpenButton, compact=True)
         self.remove_button = self._button("Remove", self._remove_selected, compact=True)
         self.clear_button = self._button("Clear finished", self._clear_completed, compact=True)
+        self.remove_button.setToolTip("Remove selected clip")
+        self.clear_button.setToolTip("Clear finished, failed, and cancelled clips")
+        self.remove_button.setAccessibleName("Remove selected clip")
+        self.clear_button.setAccessibleName("Clear finished clips")
+        for button in (self.remove_button, self.clear_button):
+            button.setText("")
+            button.setFixedWidth(34)
         for button in (self.rerender_button, self.add_button, self.remove_button, self.clear_button):
             toolbar.addWidget(button)
         queue_layout.addLayout(toolbar)
 
         self.tree = QTreeWidget(queue_card)
-        self.tree.setColumnCount(4)
-        self.tree.setHeaderLabels(["File", "Resolution / FPS / Duration", "Samples", "Status"])
+        self.tree.setColumnCount(3)
+        self.tree.setHeaderLabels(["CLIP / SOURCE", "SAMPLES", "STATUS"])
         self.tree.setRootIsDecorated(False)
         self.tree.setUniformRowHeights(True)
-        self.tree.setAlternatingRowColors(True)
+        self.tree.setAlternatingRowColors(False)
+        self.tree.setMouseTracking(True)
+        self.tree.setAccessibleName("Video render queue")
+        self.tree.setMinimumHeight(100)
+        self.queue_delegate = QueueDelegate(self.tree)
+        self.tree.setItemDelegate(self.queue_delegate)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.tree.header().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.tree.setColumnWidth(1, 88)
+        self.tree.setColumnWidth(2, 155)
         self.tree.header().setStretchLastSection(False)
         self.tree.itemSelectionChanged.connect(self._on_select)
         self.tree.itemDoubleClicked.connect(lambda *_: self._open_selected_folder())
         self.tree.customContextMenuRequested.connect(self._show_context_menu)
-        queue_layout.addWidget(self.tree, 1)
+        self.queue_stack = QStackedWidget(queue_card)
+        self.queue_stack.setObjectName("queueStack")
+        empty = QWidget(self.queue_stack)
+        empty_layout = QVBoxLayout(empty)
+        empty_layout.setSpacing(9)
+        empty_layout.addStretch()
+        for text, name in (
+            ("▷", "emptyMark"), ("A little motion. A big difference.", "emptyTitle"),
+            ("Add a clip or drop a folder above. Your renders will appear here.", "muted"),
+        ):
+            label = QLabel(text, empty)
+            label.setObjectName(name)
+            label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            label.setWordWrap(True)
+            empty_layout.addWidget(label)
+        empty_layout.addStretch()
+        self.queue_stack.addWidget(empty)
+        self.queue_stack.addWidget(self.tree)
+        queue_layout.addWidget(self.queue_stack, 1)
+        queue_layout.addWidget(self.selection_label)
         left_layout.addWidget(queue_card, 1)
 
         progress_card = make_card(left)
         progress_layout = QVBoxLayout(progress_card)
-        progress_layout.setContentsMargins(14, 12, 14, 13)
-        progress_layout.setSpacing(7)
-        self.stage_label = QLabel("Idle", progress_card)
+        progress_layout.setContentsMargins(18, 14, 18, 16)
+        progress_layout.setSpacing(9)
+        progress_heading = QHBoxLayout()
+        progress_copy = QVBoxLayout()
+        progress_copy.setSpacing(4)
+        self.stage_label = QLabel("Ready when you are", progress_card)
         self.stage_label.setObjectName("sectionTitle")
-        progress_layout.addWidget(self.stage_label)
+        self.stage_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        progress_copy.addWidget(self.stage_label)
+        self.progress_label = QLabel("Choose a preset, then start your queue.", progress_card)
+        self.progress_label.setObjectName("muted")
+        progress_copy.addWidget(self.progress_label)
+        progress_heading.addLayout(progress_copy, 1)
+        self.progress_percent = QLabel("0%", progress_card)
+        self.progress_percent.setObjectName("progressPercent")
+        progress_heading.addWidget(self.progress_percent)
+        progress_layout.addLayout(progress_heading)
         self.current_progress = SmoothProgressBar(progress_card)
         progress_layout.addWidget(self.current_progress)
-        self.progress_label = QLabel("0%  •  0.00×  •  ETA --:--:--", progress_card)
-        self.progress_label.setObjectName("muted")
-        progress_layout.addWidget(self.progress_label)
         self.overall_progress = SmoothProgressBar(progress_card)
         self.overall_progress.setObjectName("overallProgress")
         progress_layout.addWidget(self.overall_progress)
-        self.overall_label = QLabel("Queue 0%", progress_card)
+        self.overall_label = QLabel("No active queue", progress_card)
         self.overall_label.setObjectName("muted")
         progress_layout.addWidget(self.overall_label)
         controls = QHBoxLayout()
@@ -787,7 +920,8 @@ class FRUCApp(QMainWindow):
         left_layout.addWidget(progress_card)
 
         self.log_toggle = QToolButton(left)
-        self.log_toggle.setText("Show render log  ▾")
+        self.log_toggle.setObjectName("logToggle")
+        self.log_toggle.setText("▸  Render log")
         self.log_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
         self.log_toggle.clicked.connect(self._toggle_log)
         left_layout.addWidget(self.log_toggle)
@@ -795,17 +929,25 @@ class FRUCApp(QMainWindow):
         self.log_box.setReadOnly(True)
         self.log_box.setMaximumBlockCount(4000)
         self.log_box.setFont(QFont("Cascadia Mono", 9))
-        self.log_box.setFixedHeight(145)
+        self.log_box.setMaximumHeight(145)
         self.log_box.hide()
         left_layout.addWidget(self.log_box)
         self._build_settings(root, body)
+        for sequence, callback in (("Ctrl+O", self._pick_files), ("Ctrl+Return", self._start_queue)):
+            action = QAction(self)
+            action.setShortcut(sequence)
+            action.triggered.connect(callback)
+            self.addAction(action)
+        self.add_button.setToolTip("Add video files (Ctrl+O)")
+        self.start_button.setToolTip("Start the render queue (Ctrl+Enter)")
 
     def _build_settings(self, parent: QWidget, body: QHBoxLayout) -> None:
         scroll = SmoothScrollArea(parent)
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setMinimumWidth(370)
-        scroll.setMaximumWidth(430)
+        scroll.setMinimumWidth(360)
+        scroll.setMaximumWidth(380)
+        self.settings_scroll = scroll
         self.settings_content = QFrame(scroll)
         self.settings_content.setObjectName("settingsCard")
         panel = QVBoxLayout(self.settings_content)
@@ -818,17 +960,29 @@ class FRUCApp(QMainWindow):
         settings_title.setObjectName("cardTitle")
         heading.addWidget(settings_title)
         heading.addStretch(1)
-        badge = QLabel("GPU pipeline", self.settings_content)
+        badge = QLabel("VULKAN", self.settings_content)
         badge.setObjectName("valueBadge")
         heading.addWidget(badge)
         panel.addLayout(heading)
 
-        self._section(panel, "Preset")
+        self._section(panel, "Start with a look")
+        preset_row = QHBoxLayout()
+        preset_row.setSpacing(6)
+        self.preset_buttons: dict[str, PresetButton] = {}
+        for name, (samples, mixer) in PRESETS.items():
+            button = PresetButton("Smooth" if name == "Extra smooth" else name, samples, mixer, self.settings_content)
+            button.clicked.connect(lambda _checked=False, value=name: self._apply_preset(value))
+            preset_row.addWidget(button, 1)
+            self.preset_buttons[name] = button
+        panel.addLayout(preset_row)
         self.preset_combo = AnimatedComboBox(self.settings_content)
         self.preset_combo.addItems(["Custom", *PRESETS])
         self.preset_combo.setCurrentText("Custom")
         self.preset_combo.textActivated.connect(self._apply_preset)
-        panel.addWidget(self.preset_combo)
+        self.preset_combo.hide()
+        self.preset_label = QLabel("Custom settings", self.settings_content)
+        self.preset_label.setObjectName("muted")
+        panel.addWidget(self.preset_label)
         self._section(panel, "Temporal sampling")
         self.multiplier_control = SegmentedControl(["2×", "3×", "4×", "6×", "8×", "12×", "16×"], f"{self.settings.multiplier}×", self.settings_content)
         self.multiplier_control.value_changed.connect(self._settings_changed)
@@ -858,7 +1012,8 @@ class FRUCApp(QMainWindow):
 
         self._section(panel, "Motion mixer")
         self.mixer_combo = AnimatedComboBox(self.settings_content)
-        self.mixer_combo.addItem(MIXER_LABELS.get(self.settings.frame_mixer, MIXER_LABELS["linear"]))
+        self.mixer_combo.addItems(MIXER_LABELS.values())
+        self.mixer_combo.setCurrentText(MIXER_LABELS[self.settings.frame_mixer])
         self.mixer_combo.currentTextChanged.connect(self._settings_changed)
         panel.addWidget(self.mixer_combo)
         self._hint(panel, "Detected libplacebo temporal mixers only")
@@ -868,6 +1023,7 @@ class FRUCApp(QMainWindow):
         self.blur_slider.setRange(25, 200)
         self.blur_slider.setSingleStep(1)
         self.blur_slider.setValue(round(self.settings.blur_amount * 100))
+        self.blur_slider.setAccessibleName("Blur amount, percent")
         self.blur_slider.valueChanged.connect(self._blur_changed)
         self.blur_label = QLabel(f"{self.blur_slider.value()}%", self.settings_content)
         self.blur_label.setObjectName("valueBadge")
@@ -878,7 +1034,8 @@ class FRUCApp(QMainWindow):
 
         self._section(panel, "Video codec / quality")
         self.codec_combo = AnimatedComboBox(self.settings_content)
-        self.codec_combo.addItem(CODEC_LABELS.get(self.settings.video_codec, CODEC_LABELS["h264"]))
+        self.codec_combo.addItems(CODEC_LABELS.values())
+        self.codec_combo.setCurrentText(CODEC_LABELS[self.settings.video_codec])
         self.codec_combo.currentTextChanged.connect(self._settings_changed)
         panel.addWidget(self.codec_combo)
         self._hint(panel, "Same QP control  •  H.264 is safest for video editors")
@@ -886,6 +1043,7 @@ class FRUCApp(QMainWindow):
         self.qp_slider = SmoothSlider(Qt.Orientation.Horizontal, self.settings_content)
         self.qp_slider.setRange(180, 400)
         self.qp_slider.setValue(self.settings.qp * 10)
+        self.qp_slider.setAccessibleName("Video quality QP")
         self.qp_slider.valueChanged.connect(self._qp_changed)
         self.qp_label = QLabel(f"QP {self.settings.qp}", self.settings_content)
         self.qp_label.setObjectName("valueBadge")
@@ -909,6 +1067,8 @@ class FRUCApp(QMainWindow):
         self.output_entry.textChanged.connect(self._settings_changed)
         self.output_browse = self._button("", self._pick_output_directory, QStyle.StandardPixmap.SP_DirOpenIcon, compact=True)
         self.output_browse.setFixedWidth(40)
+        self.output_browse.setToolTip("Choose output folder")
+        self.output_browse.setAccessibleName("Choose output folder")
         output_row.addWidget(self.output_entry, 1)
         output_row.addWidget(self.output_browse)
         panel.addLayout(output_row)
@@ -922,6 +1082,7 @@ class FRUCApp(QMainWindow):
         panel.addWidget(self.keep_ts_check)
 
         self.advanced_button = QToolButton(self.settings_content)
+        self.advanced_button.setObjectName("advancedToggle")
         self.advanced_button.setText("Advanced  ▾")
         self.advanced_button.setCheckable(True)
         self.advanced_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -934,7 +1095,7 @@ class FRUCApp(QMainWindow):
         advanced.setSpacing(7)
         advanced.addWidget(QLabel("Vulkan device index", self.advanced_frame))
         self.device_combo = AnimatedComboBox(self.advanced_frame)
-        self.device_combo.addItems([str(index) for index in range(8)])
+        self.device_combo.addItems([str(index) for index in range(16)])
         self.device_combo.setCurrentText(str(self.settings.device_index))
         self.device_combo.textActivated.connect(self._device_changed)
         advanced.addWidget(self.device_combo)
@@ -955,7 +1116,16 @@ class FRUCApp(QMainWindow):
         if object_name:
             button.setObjectName(object_name)
         if standard_icon is not None:
-            button.setIcon(self.style().standardIcon(standard_icon))
+            kind = {
+                QStyle.StandardPixmap.SP_MediaPlay: "play",
+                QStyle.StandardPixmap.SP_MediaStop: "stop",
+                QStyle.StandardPixmap.SP_DialogCancelButton: "cancel",
+                QStyle.StandardPixmap.SP_DialogOpenButton: "add",
+                QStyle.StandardPixmap.SP_DirOpenIcon: "folder",
+                QStyle.StandardPixmap.SP_BrowserReload: "refresh",
+            }.get(standard_icon, "folder")
+            button.setProperty("iconKind", kind)
+            button.setIcon(line_icon(kind, "#a394ff"))
             button.setIconSize(QSize(16, 16))
         if compact:
             button.setProperty("compact", True)
@@ -997,12 +1167,24 @@ class FRUCApp(QMainWindow):
         self.clear_button.setIcon(line_icon("clear", self.colors["success"]))
         self.remove_button.setIconSize(QSize(17, 17))
         self.clear_button.setIconSize(QSize(17, 17))
+        self.drop_zone.artwork.set_colors(self.colors)
+        self.queue_delegate.colors = self.colors
+        self.tree.viewport().update()
+        for button in self.preset_buttons.values():
+            button.set_colors(self.colors)
+        for frame in self.findChildren(QFrame):
+            effect = frame.graphicsEffect()
+            if isinstance(effect, QGraphicsDropShadowEffect):
+                effect.setColor(QColor(0, 0, 0, 40 if dark else 14))
         for button in self.findChildren(HoverButton):
             color = self.colors.get(
                 "danger" if button.objectName() == "dangerButton" else
                 "warning" if button.objectName() == "warningButton" else "accent"
             )
             button.set_hover_color(color)
+            if button.property("iconKind"):
+                icon_color = self.colors["accent_text"] if button is self.start_button else color
+                button.setIcon(line_icon(button.property("iconKind"), icon_color))
         repolish(self.capability_label)
         for job in self.jobs.values():
             self._update_row(job)
@@ -1012,12 +1194,40 @@ class FRUCApp(QMainWindow):
         self._apply_theme()
         save_settings(self._collect_settings())
 
+    def _system_theme_changed(self, *_args) -> None:
+        if self.appearance == "System":
+            self._apply_theme()
+
+    def _change_motion(self, enabled: bool) -> None:
+        self.reduced_motion = not enabled
+        QApplication.instance().setProperty("reducedMotion", self.reduced_motion)
+        if not enabled:
+            HighRefreshTween.finish_all()
+        self.motion_button.setText("Motion on" if enabled else "Motion off")
+        self.drop_zone.artwork.sync_activity()
+        save_settings(self._collect_settings())
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() in {QEvent.Type.ActivationChange, QEvent.Type.WindowStateChange} and hasattr(self, "drop_zone"):
+            self.drop_zone.artwork.sync_activity()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "drop_zone"):
+            self.drop_zone.set_compact(self.height() < 800)
+
     def _set_capability(self, text: str, state: str) -> None:
         self.capability_label.setText(f"●  {text}")
         self.capability_label.setProperty("state", state)
+        self.capability_label.setToolTip(text)
         repolish(self.capability_label)
 
     def _start_capability_check(self) -> None:
+        self._capability_generation += 1
+        generation = self._capability_generation
+        self.capabilities = None
+        self._refresh_queue_summary()
         if not self.ffmpeg or not self.ffprobe:
             missing = "ffmpeg.exe" if not self.ffmpeg else "ffprobe.exe"
             self._set_capability(f"Missing {missing}", "error")
@@ -1033,13 +1243,15 @@ class FRUCApp(QMainWindow):
         def check() -> None:
             try:
                 capabilities = detect_capabilities(self.ffmpeg, device)
-                self.events.put({"event": "capabilities", "capabilities": capabilities})
+                self.events.put({"event": "capabilities", "capabilities": capabilities, "generation": generation})
             except Exception as exc:
-                self.events.put({"event": "capability_error", "error": str(exc)})
+                self.events.put({"event": "capability_error", "error": str(exc), "generation": generation})
 
         threading.Thread(target=check, daemon=True).start()
 
     def _pick_files(self) -> None:
+        if self._rendering or (self.renderer and self.renderer.running):
+            return
         pattern = " ".join(f"*{extension}" for extension in sorted(VIDEO_EXTENSIONS))
         selected, _ = QFileDialog.getOpenFileNames(self, "Add video files", "", f"Video files ({pattern});;All files (*)")
         if selected:
@@ -1067,9 +1279,8 @@ class FRUCApp(QMainWindow):
             existing.add(key)
             job = RenderJob(resolved, status=JobStatus.PROBING)
             self.jobs[job.id] = job
-            item = QTreeWidgetItem([resolved.name, "Inspecting…", self.multiplier_control.value(), JobStatus.PROBING.value])
+            item = QTreeWidgetItem([resolved.name, self.multiplier_control.value(), JobStatus.PROBING.value])
             item.setData(0, Qt.ItemDataRole.UserRole, job.id)
-            item.setIcon(0, self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon))
             item.setToolTip(0, str(resolved))
             self.job_items[job.id] = item
             self.tree.addTopLevelItem(item)
@@ -1080,9 +1291,12 @@ class FRUCApp(QMainWindow):
             threading.Thread(target=self._probe_jobs, args=(added,), daemon=True).start()
         elif paths:
             self._append_log("WARNING", "No new supported top-level video files were found")
+        self._refresh_queue_summary()
 
     def _probe_jobs(self, jobs: list[RenderJob]) -> None:
         if not self.ffprobe:
+            for job in jobs:
+                self.events.put({"event": "probe_failed", "job_id": job.id, "error": "FFprobe was not found in ffmpeg/bin or PATH"})
             return
         for job in jobs:
             try:
@@ -1106,6 +1320,8 @@ class FRUCApp(QMainWindow):
         self.job_items.pop(job.id, None)
         self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(item))
         self._on_select()
+        self._refresh_queue_summary()
+        self._update_overall()
 
     def _clear_completed(self) -> None:
         if self.renderer and self.renderer.running:
@@ -1117,12 +1333,14 @@ class FRUCApp(QMainWindow):
             self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(item))
             del self.jobs[job_id]
         self._on_select()
+        self._refresh_queue_summary()
+        self._update_overall()
 
     def _on_select(self) -> None:
         job = self._selected_job()
         running = bool(self.renderer and self.renderer.running)
         if not job:
-            self.selection_label.setText("No file selected")
+            self.selection_label.setText("Select a clip to see its source details")
             self.selection_label.setToolTip("")
             self.open_button.setEnabled(False)
             self.rerender_button.setEnabled(False)
@@ -1132,7 +1350,7 @@ class FRUCApp(QMainWindow):
         self.selection_label.setText(text)
         self.selection_label.setToolTip(text)
         self.open_button.setEnabled(bool(job.output_path))
-        self.rerender_button.setEnabled(not running and job.status in TERMINAL_STATUSES)
+        self.rerender_button.setEnabled(not running and not self._rendering and bool(self.capabilities and self.capabilities.ready) and job.status in TERMINAL_STATUSES)
         self._update_diagnostics()
 
     def _show_context_menu(self, position) -> None:  # type: ignore[no-untyped-def]
@@ -1157,6 +1375,8 @@ class FRUCApp(QMainWindow):
         menu.exec(self.tree.viewport().mapToGlobal(position))
 
     def _start_queue(self) -> None:
+        if self._rendering or (self.renderer and self.renderer.running):
+            return
         candidates = [job for job in self.jobs.values() if job.status in {JobStatus.WAITING, JobStatus.FAILED, JobStatus.CANCELLED}]
         if not candidates:
             QMessageBox.information(self, "Queue", "Add at least one video or use Render again on a finished item.")
@@ -1169,6 +1389,8 @@ class FRUCApp(QMainWindow):
             self._begin_render([job])
 
     def _begin_render(self, candidates: list[RenderJob]) -> None:
+        if self._rendering or (self.renderer and self.renderer.running):
+            return
         if not self.renderer or not self.capabilities or not self.capabilities.ready:
             QMessageBox.critical(self, "Cannot render", "Required FFmpeg/Vulkan capabilities are not ready.")
             return
@@ -1187,19 +1409,26 @@ class FRUCApp(QMainWindow):
                 return
         for job in candidates:
             self._reset_job(job)
+            job.render_multiplier = settings.multiplier
             self._update_row(job)
         self.settings = settings
         save_settings(settings)
         self.active_job_ids = [job.id for job in candidates]
+        self.current_progress.set_fraction(0, animate=False)
+        self.progress_percent.setText("0%")
+        self.progress_label.setText("Preparing your clips…")
+        self._update_overall()
         if self.renderer.start(candidates, settings):
             self._set_rendering_ui(True)
 
     @staticmethod
     def _reset_job(job: RenderJob) -> None:
         job.progress = 0.0
+        job.stage_progress = 0.0
         job.error = ""
         job.output_path = None
         job.status = JobStatus.WAITING
+        job.render_multiplier = None
 
     def _cancel_current(self) -> None:
         if self.renderer:
@@ -1212,7 +1441,8 @@ class FRUCApp(QMainWindow):
             self.stage_label.setText("Stopping queue…")
 
     def _set_rendering_ui(self, running: bool) -> None:
-        self.start_button.setEnabled(not running and bool(self.capabilities and self.capabilities.ready))
+        self._rendering = running
+        self.start_button.setText("Rendering…" if running else "Start queue")
         self.cancel_button.setEnabled(running)
         self.stop_button.setEnabled(running)
         self.add_button.setEnabled(not running)
@@ -1220,19 +1450,25 @@ class FRUCApp(QMainWindow):
         self.clear_button.setEnabled(not running)
         self.drop_zone.setEnabled(not running)
         self.settings_content.setEnabled(not running)
+        self.drop_zone.artwork.busy = running
+        self.drop_zone.artwork.sync_activity()
         if not running:
             self._sync_output_controls()
         self._on_select()
+        self._refresh_queue_summary()
 
     def _poll_events(self) -> None:
         try:
-            while True:
+            # Keep bursts of FFmpeg diagnostics from starving paint/input events.
+            for _ in range(200):
                 self._handle_event(self.events.get_nowait())
         except queue.Empty:
             pass
 
     def _handle_event(self, event: dict[str, object]) -> None:
         kind = event["event"]
+        if kind in {"capabilities", "capability_error"} and event.get("generation") != self._capability_generation:
+            return
         if kind == "capabilities":
             caps = event["capabilities"]
             assert isinstance(caps, Capabilities)
@@ -1251,32 +1487,46 @@ class FRUCApp(QMainWindow):
                 self.codec_combo.addItems([CODEC_LABELS[codec] for codec in caps.codecs])
                 self.codec_combo.setCurrentText(CODEC_LABELS.get(current_codec, CODEC_LABELS[caps.codecs[0]]))
                 self.codec_combo.blockSignals(False)
-                self.start_button.setEnabled(not (self.renderer and self.renderer.running))
+                for name, button in self.preset_buttons.items():
+                    button.setEnabled(PRESETS[name][1] in caps.mixers)
                 self._append_log("INFO", f"{caps.version}; mixers: {', '.join(caps.mixers)}; codecs: {', '.join(caps.codecs)}")
             else:
-                self._set_capability("Missing: " + ", ".join(caps.missing or ["frame mixer"]), "error")
+                self._set_capability("GPU unavailable", "error")
+                self.capability_label.setToolTip("Missing: " + ", ".join(caps.missing or ["frame mixer"]))
                 self.start_button.setEnabled(False)
-                self._append_log("ERROR", self.capability_label.text())
+                self._append_log("ERROR", self.capability_label.toolTip())
+            self._sync_look()
+            self._refresh_queue_summary()
+            self._on_select()
             self._update_diagnostics()
         elif kind == "capability_error":
+            self.capabilities = None
             self._set_capability("Capability check failed", "error")
             self.start_button.setEnabled(False)
             self._append_log("ERROR", str(event["error"]))
+            self._refresh_queue_summary()
         elif kind in {"probe_ready", "probed"}:
             job = self.jobs.get(str(event["job_id"]))
             if job:
+                if kind == "probe_ready" and (job.status != JobStatus.PROBING or job.id in self.active_job_ids and self._rendering):
+                    return
                 job.probe = event["probe"]  # type: ignore[assignment]
                 if kind == "probe_ready" and job.status == JobStatus.PROBING:
                     job.status = JobStatus.WAITING
                 self._update_row(job)
                 self._on_select()
+                self._refresh_queue_summary()
         elif kind == "probe_failed":
             job = self.jobs.get(str(event["job_id"]))
             if job:
+                if job.status != JobStatus.PROBING or job.id in self.active_job_ids and self._rendering:
+                    return
                 job.status = JobStatus.FAILED
                 job.error = str(event["error"])
                 self._update_row(job)
                 self._append_log("ERROR", f"{job.input_path.name}: {job.error}")
+                self._refresh_queue_summary()
+                self._on_select()
         elif kind == "queue_started":
             self.stage_label.setText(f"Queue started  •  {event.get('parallel', 1)} parallel")
         elif kind == "status":
@@ -1285,24 +1535,35 @@ class FRUCApp(QMainWindow):
                 job.status = event["status"]  # type: ignore[assignment]
                 if "error" in event:
                     job.error = str(event["error"])
-                if "output_path" in event:
+                if event.get("output_path") is not None:
                     job.output_path = Path(event["output_path"])  # type: ignore[arg-type]
                 if job.status in {JobStatus.RENDERING, JobStatus.REMUXING, JobStatus.PROBING}:
+                    job.stage_progress = 0.0
                     self.current_job_id = job.id
                     self.stage_label.setText(f"{job.status.value}: {job.input_path.name}")
+                    self.current_progress.set_fraction(0, animate=False)
+                    self.progress_percent.setText("0%")
+                elif job.status == JobStatus.DONE:
+                    job.progress = 1.0
+                    job.stage_progress = 1.0
                 self._update_row(job)
                 self._update_overall()
                 self._on_select()
+                self._refresh_queue_summary()
         elif kind == "progress":
             job = self.jobs.get(str(event["job_id"]))
             if job:
                 fraction = float(event["fraction"])
+                self.current_job_id = job.id
+                job.stage_progress = fraction
                 job.progress = max(job.progress, fraction)
                 self.current_progress.set_fraction(fraction)
                 eta = format_time(event.get("eta") if isinstance(event.get("eta"), (int, float)) else None)
                 eta_text = eta if event.get("eta") is not None else "--:--:--"
-                self.progress_label.setText(f"{fraction * 100:.1f}%  •  {float(event['speed']):.2f}×  •  ETA {eta_text}")
+                self.progress_percent.setText(f"{fraction * 100:.0f}%")
+                self.progress_label.setText(f"{float(event['speed']):.2f}× speed  /  {eta_text} remaining")
                 self.stage_label.setText(f"{event['stage']}: {job.input_path.name}")
+                self.stage_label.setToolTip(self.stage_label.text())
                 self._update_row(job)
                 self._update_overall()
         elif kind == "command":
@@ -1314,9 +1575,15 @@ class FRUCApp(QMainWindow):
         elif kind == "queue_finished":
             self._set_rendering_ui(False)
             self.current_job_id = None
-            self.stage_label.setText("Queue stopped" if event.get("stopped") else "Queue finished")
-            self.current_progress.set_fraction(0, animate=False)
-            self.progress_label.setText("0%  •  0.00×  •  ETA --:--:--")
+            jobs = [self.jobs[job_id] for job_id in self.active_job_ids if job_id in self.jobs]
+            done = sum(job.status == JobStatus.DONE for job in jobs)
+            failed = sum(job.status == JobStatus.FAILED for job in jobs)
+            cancelled = sum(job.status == JobStatus.CANCELLED for job in jobs)
+            complete = bool(jobs) and done == len(jobs)
+            self.stage_label.setText("Queue stopped" if event.get("stopped") else "All renders complete" if complete else "Queue finished — review results")
+            self.current_progress.set_fraction(1 if complete else 0)
+            self.progress_percent.setText("100%" if complete else "—")
+            self.progress_label.setText(f"{done} completed  /  {failed} failed  /  {cancelled} cancelled")
             self._update_overall()
 
     def _update_row(self, job: RenderJob) -> None:
@@ -1326,12 +1593,16 @@ class FRUCApp(QMainWindow):
         media = job.details if job.probe else (job.error or "Inspecting…")
         status = job.status.value
         if job.status in {JobStatus.RENDERING, JobStatus.REMUXING}:
-            status = f"{status} {job.progress * 100:.0f}%"
+            status = f"{status} {job.stage_progress * 100:.0f}%"
         item.setText(0, job.input_path.name)
-        item.setText(1, media)
-        item.setText(2, self.multiplier_control.value())
-        item.setText(3, status)
-        item.setToolTip(3, job.error)
+        item.setData(0, DETAIL_ROLE, media)
+        item.setText(1, f"{job.render_multiplier}×" if job.render_multiplier else self.multiplier_control.value())
+        item.setText(2, status)
+        item.setData(2, STATUS_ROLE, job.status.value)
+        item.setData(2, PROGRESS_ROLE, job.stage_progress)
+        item.setToolTip(0, f"{job.input_path}\n{media}")
+        item.setToolTip(2, job.error or status)
+        item.setData(0, Qt.ItemDataRole.AccessibleTextRole, f"{job.input_path.name}, {media}")
         color = {
             JobStatus.DONE: self.colors["success"] if hasattr(self, "colors") else "#45d58a",
             JobStatus.FAILED: self.colors["danger"] if hasattr(self, "colors") else "#ee6474",
@@ -1341,25 +1612,39 @@ class FRUCApp(QMainWindow):
             JobStatus.REMUXING: self.colors["accent"] if hasattr(self, "colors") else "#4395f7",
         }.get(job.status)
         brush = QBrush(QColor(color)) if color else QBrush()
-        for column in range(4):
+        for column in range(3):
             item.setForeground(column, brush)
+
+    def _refresh_queue_summary(self) -> None:
+        count = len(self.jobs)
+        self.queue_stack.setCurrentIndex(1 if count else 0)
+        self.queue_count.setText(f"{count} clip{'s' if count != 1 else ''}")
+        ready = bool(self.capabilities and self.capabilities.ready)
+        runnable = any(job.status in {JobStatus.WAITING, JobStatus.FAILED, JobStatus.CANCELLED} for job in self.jobs.values())
+        self.start_button.setEnabled(ready and runnable and not self._rendering)
+        selected = self._selected_job()
+        self.rerender_button.setEnabled(ready and not self._rendering and bool(selected and selected.status in TERMINAL_STATUSES))
+        self.remove_button.setEnabled(not self._rendering and selected is not None)
+        self.clear_button.setEnabled(not self._rendering and any(job.status in TERMINAL_STATUSES for job in self.jobs.values()))
 
     def _update_overall(self) -> None:
         jobs = [self.jobs[job_id] for job_id in self.active_job_ids if job_id in self.jobs]
         if not jobs:
             self.overall_progress.set_fraction(0, animate=False)
-            self.overall_label.setText("Queue 0%")
+            self.overall_label.setText("No active queue")
             return
-        weights = [job.probe.duration if job.probe else 1.0 for job in jobs]
+        weights = [max(0.001, job.probe.duration) if job.probe else 1.0 for job in jobs]
         done = sum(weight * (1.0 if job.status in TERMINAL_STATUSES else job.progress) for job, weight in zip(jobs, weights))
         fraction = done / sum(weights)
         self.overall_progress.set_fraction(fraction)
-        self.overall_label.setText(f"Queue {fraction * 100:.1f}%")
+        processed = sum(job.status in TERMINAL_STATUSES for job in jobs)
+        self.overall_label.setText(f"QUEUE   {fraction * 100:.0f}%   /   {processed} of {len(jobs)} processed")
 
     def _settings_changed(self, *_args) -> None:
         if self._applying_preset:
             return
         self.preset_combo.setCurrentText("Custom")
+        self._sync_look()
         for job in self.jobs.values():
             self._update_row(job)
         self._update_diagnostics()
@@ -1368,17 +1653,28 @@ class FRUCApp(QMainWindow):
         if name not in PRESETS:
             return
         multiplier, mixer = PRESETS[name]
-        if self.capabilities and mixer not in self.capabilities.mixers:
-            mixer = self.capabilities.mixers[0]
+        if self.capabilities and self.capabilities.mixers and mixer not in self.capabilities.mixers:
+            return
         self._applying_preset = True
         self.multiplier_control.set_value(f"{multiplier}×")
         self.mixer_combo.setCurrentText(MIXER_LABELS[mixer])
         self.blur_slider.setValue(100)
         self.blur_label.setText("100%")
         self._applying_preset = False
+        self._sync_look()
         for job in self.jobs.values():
             self._update_row(job)
         self._update_diagnostics()
+
+    def _sync_look(self) -> None:
+        samples = int(self.multiplier_control.value().rstrip("×"))
+        mixer = MIXERS_BY_LABEL.get(self.mixer_combo.currentText(), "linear")
+        active = next((name for name, values in PRESETS.items() if values == (samples, mixer) and self.blur_slider.value() == 100), "Custom")
+        for name, button in self.preset_buttons.items():
+            button.setChecked(name == active)
+        self.preset_combo.setCurrentText(active)
+        self.preset_label.setText(f"{active} look  ·  {samples}× sampling  ·  {self.blur_slider.value()}% blur")
+        self.drop_zone.artwork.set_sampling(samples, self.blur_slider.value() / 100)
 
     def _qp_changed(self, value: int) -> None:
         self.qp_label.setText(f"QP {(value + 5) // 10}")
@@ -1425,6 +1721,7 @@ class FRUCApp(QMainWindow):
             appearance=self.appearance,
             device_index=int(self.device_combo.currentText()),
             advanced_open=self.advanced_visible,
+            reduced_motion=self.reduced_motion,
         ).validate()
 
     def _toggle_advanced(self, force: bool | None = None) -> None:
@@ -1432,14 +1729,14 @@ class FRUCApp(QMainWindow):
         self.advanced_visible = show
         self.advanced_button.blockSignals(True)
         self.advanced_button.setChecked(show)
-        self.advanced_button.setText("Advanced  ▴" if show else "Advanced  ▾")
+        self.advanced_button.setText("▾  Advanced" if show else "▸  Advanced")
         self.advanced_button.blockSignals(False)
-        self.advanced_frame.setVisible(show)
+        reveal(self.advanced_frame, show, animate=self.isVisible())
 
     def _toggle_log(self) -> None:
         self.log_visible = not self.log_visible
-        self.log_box.setVisible(self.log_visible)
-        self.log_toggle.setText("Hide render log  ▴" if self.log_visible else "Show render log  ▾")
+        reveal(self.log_box, self.log_visible, height=145)
+        self.log_toggle.setText("▾  Render log" if self.log_visible else "▸  Render log")
 
     def _append_log(self, level: str, message: str) -> None:
         line = f"[{time.strftime('%H:%M:%S')}] {level}: {message}"

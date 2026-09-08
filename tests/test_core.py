@@ -3,13 +3,16 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import subprocess
 from fractions import Fraction
 from pathlib import Path
+from unittest.mock import patch
 
 from fruc_app.ffmpeg import (
     build_render_command,
     filter_chain,
     output_paths,
+    probe_media,
     progress_seconds,
     select_fps,
 )
@@ -120,12 +123,32 @@ class FFMpegCoreTests(unittest.TestCase):
 
 
 class SettingsTests(unittest.TestCase):
+    def test_malformed_settings_recover_per_field(self) -> None:
+        settings = RenderSettings.from_dict({
+            "multiplier": [], "frame_mixer": {"bad": True}, "qp": float("inf"),
+            "blur_amount": "NaN", "parallel_jobs": None, "device_index": "broken",
+            "auto_mp4": "false", "reduced_motion": True, "video_codec": "av1",
+        })
+        self.assertEqual((settings.multiplier, settings.frame_mixer, settings.qp), (4, "linear", 28))
+        self.assertEqual((settings.blur_amount, settings.parallel_jobs, settings.device_index), (1.0, 1, 0))
+        self.assertTrue(settings.auto_mp4)
+        self.assertTrue(settings.reduced_motion)
+        self.assertEqual(settings.video_codec, "av1")
+
+    def test_non_finite_json_settings_do_not_prevent_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "settings.json"
+            path.write_text('{"qp": 1e999, "blur_amount": null, "multiplier": 8}', encoding="utf-8")
+            settings = load_settings(path)
+            self.assertEqual((settings.qp, settings.blur_amount, settings.multiplier), (28, 1.0, 8))
+
     def test_settings_round_trip_and_unknown_keys(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "settings.json"
             save_settings(
                 RenderSettings(
-                    multiplier=16, blur_amount=1.5, video_codec="av1", qp=31, parallel_jobs=3
+                    multiplier=16, blur_amount=1.5, video_codec="av1", qp=31, parallel_jobs=3,
+                    reduced_motion=True,
                 ),
                 path,
             )
@@ -133,6 +156,7 @@ class SettingsTests(unittest.TestCase):
             data["future_setting"] = True
             path.write_text(json.dumps(data), encoding="utf-8")
             loaded = load_settings(path)
+            self.assertTrue(loaded.reduced_motion)
             self.assertEqual(
                 (
                     loaded.multiplier, loaded.blur_amount, loaded.video_codec,
@@ -155,6 +179,42 @@ class SettingsTests(unittest.TestCase):
             ),
             (4, 2.0, "h264", 40, 4, 0),
         )
+
+
+class MetadataTests(unittest.TestCase):
+    def probe(self, streams: list[dict], duration: object = "12.5") -> ProbeInfo:
+        result = subprocess.CompletedProcess([], 0, json.dumps({
+            "streams": streams, "format": {"duration": duration},
+        }), "")
+        with patch("fruc_app.ffmpeg._capture", return_value=result):
+            return probe_media(Path("ffprobe"), Path("clip.mp4"))
+
+    @staticmethod
+    def video(**extra: object) -> dict:
+        return {"codec_type": "video", "index": 2, "width": 1920, "height": 1080,
+                "avg_frame_rate": "60000/1001", "codec_name": "h264", **extra}
+
+    def test_unavailable_or_non_finite_stream_duration_uses_container(self) -> None:
+        for duration in ("N/A", "nan", "inf", "-2", None, "0"):
+            with self.subTest(duration=duration):
+                self.assertEqual(self.probe([self.video(duration=duration)]).duration, 12.5)
+
+    def test_non_finite_container_duration_is_rejected(self) -> None:
+        for duration in ("N/A", "nan", "inf", "-1", "0"):
+            with self.subTest(duration=duration), self.assertRaisesRegex(RuntimeError, "duration is unavailable"):
+                self.probe([self.video()], duration)
+
+    def test_cover_art_is_skipped_and_render_maps_the_probed_video(self) -> None:
+        cover = self.video(index=0, disposition={"attached_pic": 1}, width=500, height=500)
+        media = self.probe([cover, self.video()])
+        self.assertEqual((media.width, media.video_stream_index), (1920, 2))
+        command = build_render_command(Path("ffmpeg"), Path("in.mp4"), Path("out.ts"), media, RenderSettings())
+        self.assertEqual(command[command.index("-map") + 1], "0:2")
+        self.assertTrue(filter_chain(media, RenderSettings(multiplier=16)).startswith("[0:2]fruc_vulkan="))
+
+    def test_cover_art_without_video_is_rejected(self) -> None:
+        with self.assertRaises(RuntimeError):
+            self.probe([self.video(disposition={"attached_pic": 1})])
 
 
 if __name__ == "__main__":

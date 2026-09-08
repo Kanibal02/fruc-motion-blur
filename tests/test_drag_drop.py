@@ -13,12 +13,14 @@ from PySide6.QtWidgets import QApplication, QWidget
 
 from fruc_app.app import AnimatedComboBox, DropZone, FRUCApp, SmoothScrollArea, frame_interval_ms
 from fruc_app.models import JobStatus, RenderJob
+from tests.qt_support import load_test_fonts
 
 
 class QtUiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.qt_app = QApplication.instance() or QApplication([])
+        load_test_fonts()
 
     def test_drop_zone_accepts_local_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

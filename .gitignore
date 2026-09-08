@@ -6,6 +6,7 @@ __pycache__/
 venv/
 dist/
 build/
+ui-captures/
 *.spec
 ffmpeg/bin/*.exe
 ffmpeg/doc/

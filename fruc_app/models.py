@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from fractions import Fraction
+from math import isfinite
 from pathlib import Path
 from uuid import uuid4
 
@@ -26,6 +27,7 @@ class ProbeInfo:
     codec: str = "unknown"
     audio_codec: str | None = None
     pixel_format: str | None = None
+    video_stream_index: int | None = None
 
     @property
     def fps_text(self) -> str:
@@ -55,18 +57,39 @@ class RenderSettings:
     appearance: str = "Dark"
     device_index: int = 0
     advanced_open: bool = False
+    reduced_motion: bool = False
 
     def validate(self) -> RenderSettings:
-        self.multiplier = self.multiplier if self.multiplier in {2, 3, 4, 6, 8, 12, 16} else 4
-        self.performance = self.performance if self.performance in {"fast", "medium", "slow"} else "fast"
-        self.grid = self.grid if self.grid in {1, 2, 4} else 4
-        self.frame_mixer = self.frame_mixer if self.frame_mixer else "linear"
-        self.blur_amount = min(2.0, max(0.25, float(self.blur_amount)))
-        self.video_codec = self.video_codec if self.video_codec in {"h264", "hevc", "av1"} else "h264"
-        self.qp = min(40, max(18, int(self.qp)))
-        self.parallel_jobs = min(4, max(1, int(self.parallel_jobs)))
-        self.appearance = self.appearance if self.appearance in {"Dark", "Light", "System"} else "Dark"
-        self.device_index = min(15, max(0, int(self.device_index)))
+        defaults = RenderSettings()
+        choices = {
+            "multiplier": (2, 3, 4, 6, 8, 12, 16),
+            "performance": ("fast", "medium", "slow"),
+            "grid": (1, 2, 4),
+            "frame_mixer": ("linear", "hermite"),
+            "video_codec": ("h264", "hevc", "av1"),
+            "appearance": ("Dark", "Light", "System"),
+        }
+        for name, allowed in choices.items():
+            value = getattr(self, name)
+            if type(value) is not type(getattr(defaults, name)) or value not in allowed:
+                setattr(self, name, getattr(defaults, name))
+        for name, low, high in (
+            ("blur_amount", 0.25, 2.0), ("qp", 18, 40),
+            ("parallel_jobs", 1, 4), ("device_index", 0, 15),
+        ):
+            try:
+                value = float(getattr(self, name))
+                if not isfinite(value):
+                    raise ValueError("non-finite setting")
+                value = min(high, max(low, value))
+                setattr(self, name, value if name == "blur_amount" else int(value))
+            except (TypeError, ValueError, OverflowError):
+                setattr(self, name, getattr(defaults, name))
+        for name in (
+            "auto_mp4", "keep_ts", "output_same_as_source", "advanced_open", "reduced_motion",
+        ):
+            if not isinstance(getattr(self, name), bool):
+                setattr(self, name, getattr(defaults, name))
         if not isinstance(self.output_directory, str):
             self.output_directory = ""
         return self
@@ -89,6 +112,8 @@ class RenderJob:
     progress: float = 0.0
     output_path: Path | None = None
     error: str = ""
+    render_multiplier: int | None = None
+    stage_progress: float = 0.0
 
     @property
     def details(self) -> str:
